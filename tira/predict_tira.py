@@ -85,14 +85,22 @@ def process_level(model, fp, input_level_dir: Path, output_level_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input", default="/input")
-    parser.add_argument("-o", "--output", default="/output")
+    parser.add_argument("-i", "--input", default=None)
+    parser.add_argument("-o", "--output", default=None)
     args = parser.parse_args()
 
-    input_base = Path(args.input)
-    output_base = Path(args.output)
+    # ✅ TIRA SAFE MODE (IMPORTANT FIX)
+    input_base = Path(
+        args.input if args.input else os.environ.get("inputDataset", "/input")
+    )
 
-    print(f"[tira] Loading model from {MODEL_PATH}")
+    output_base = Path(
+        args.output if args.output else os.environ.get("outputDir", "/output")
+    )
+
+    print(f"[tira] input: {input_base}")
+    print(f"[tira] output: {output_base}")
+
     model = load_model(MODEL_PATH)
 
     cfg = load_feature_config()
