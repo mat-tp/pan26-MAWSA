@@ -1,0 +1,48 @@
+name: Upload Software to TIRA
+
+on:
+  workflow_dispatch:
+    inputs:
+      directory:
+        description: "The directory that contains the submission. Can be . for root"
+        required: true
+        default: .
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.8
+
+      - name: Install Docker Compose plugin
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker-compose-plugin
+
+      - name: Install TIRA CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip3 install tira
+
+      - name: Build, test, and upload image
+        run: |
+          tira-cli login --token ${{ secrets.TIRA_CLIENT_TOKEN }}
+          tira-cli verify-installation
+          tira-cli code-submission \
+            --path ${{ inputs.directory }} \
+            --task multi-author-writing-style-analysis-2026 \
+            --dataset multi-author-writing-style-analysis-2026/smoketest-20260330-training
