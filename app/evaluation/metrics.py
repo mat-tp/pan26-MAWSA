@@ -14,14 +14,24 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import StratifiedGroupKFold, cross_validate
+from sklearn.model_selection import (
+    StratifiedGroupKFold,
+    cross_validate,
+)
 
-from models.classifiers import MODEL_REGISTRY
+from app.models.classifiers import MODEL_REGISTRY
 
+# Models that must be skipped above a row threshold (OOM / hang risk)
+_EXPENSIVE_MODELS = {
+    "svm": 5_000,  # RBF kernel: O(n²) memory — should never reach here if
+    # config is correct, but guard stays as a safety net
+    "knn": 20_000,  # brute-force KNN: slow at predict time on large datasets
+}
 
 # ---------------------------------------------------------------------------
 # Cross-validation
 # ---------------------------------------------------------------------------
+
 
 def cross_validate_model(model, X, y, groups, n_splits=5):
     """
@@ -35,7 +45,9 @@ def cross_validate_model(model, X, y, groups, n_splits=5):
     """
     cv = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=42)
     scores = cross_validate(
-        model, X, y,
+        model,
+        X,
+        y,
         groups=groups,
         cv=cv,
         scoring="f1",
@@ -43,27 +55,43 @@ def cross_validate_model(model, X, y, groups, n_splits=5):
         n_jobs=-1,
     )
     return {
-        "test_f1_mean":  round(float(np.mean(scores["test_score"])),  4),
-        "test_f1_std":   round(float(np.std(scores["test_score"])),   4),
+        "test_f1_mean": round(float(np.mean(scores["test_score"])), 4),
+        "test_f1_std": round(float(np.std(scores["test_score"])), 4),
         "train_f1_mean": round(float(np.mean(scores["train_score"])), 4),
-        "train_f1_std":  round(float(np.std(scores["train_score"])),  4),
+        "train_f1_std": round(float(np.std(scores["train_score"])), 4),
     }
 
 
 def compare_all_models(X, y, groups, n_splits=5):
     """Run cross-validation for every model in MODEL_REGISTRY."""
+    n_rows = X.shape[0]
     results = {}
+
     for name, factory in MODEL_REGISTRY.items():
+        limit = _EXPENSIVE_MODELS.get(name)
+        if limit and n_rows > limit:
+            print(
+                f"[evaluation] SKIPPING {name}: {n_rows} rows exceeds "
+                f"safe limit of {limit}. See _EXPENSIVE_MODELS in metrics.py."
+            )
+            results[name] = {
+                "skipped": True,
+                "reason": f"n_rows={n_rows} > limit={limit}",
+            }
+            continue
+
         print(f"[evaluation] Cross-validating: {name} ...")
         res = cross_validate_model(factory(), X, y, groups, n_splits=n_splits)
         results[name] = res
         print(f"  F1 = {res['test_f1_mean']:.4f} ± {res['test_f1_std']:.4f}")
+
     return results
 
 
 # ---------------------------------------------------------------------------
 # Held-out evaluation
 # ---------------------------------------------------------------------------
+
 
 def evaluate_model(model, X_test, y_test, model_name="model"):
     """
@@ -72,12 +100,13 @@ def evaluate_model(model, X_test, y_test, model_name="model"):
     """
     y_pred = model.predict(X_test)
 
-    f1   = f1_score(y_test, y_pred, zero_division=0)
+    f1 = f1_score(y_test, y_pred, zero_division=0)
     prec = precision_score(y_test, y_pred, zero_division=0)
-    rec  = recall_score(y_test, y_pred, zero_division=0)
-    cm   = confusion_matrix(y_test, y_pred).tolist()
-    rep  = classification_report(
-        y_test, y_pred,
+    rec = recall_score(y_test, y_pred, zero_division=0)
+    cm = confusion_matrix(y_test, y_pred).tolist()
+    rep = classification_report(
+        y_test,
+        y_pred,
         target_names=["same_author", "switch"],
         zero_division=0,
     )
@@ -101,19 +130,20 @@ def evaluate_model(model, X_test, y_test, model_name="model"):
     print(f"Confusion matrix:\n{cm}\n")
 
     return {
-        "model":      model_name,
-        "f1":         round(float(f1),   4),
-        "precision":  round(float(prec), 4),
-        "recall":     round(float(rec),  4),
-        "auc":        auc,
+        "model": model_name,
+        "f1": round(float(f1), 4),
+        "precision": round(float(prec), 4),
+        "recall": round(float(rec), 4),
+        "auc": auc,
         "confusion_matrix": cm,
-        "report":     rep,
+        "report": rep,
     }
 
 
 # ---------------------------------------------------------------------------
 # Per-difficulty breakdown
 # ---------------------------------------------------------------------------
+
 
 def evaluate_by_difficulty(model, X_test, y_test, meta):
     """
@@ -133,16 +163,18 @@ def evaluate_by_difficulty(model, X_test, y_test, meta):
         y_pred = model.predict(X_d)
 
         results[diff] = {
-            "n_pairs":   len(idx),
+            "n_pairs": len(idx),
             "n_switches": int(sum(y_d)),
-            "f1":        round(float(f1_score(y_d, y_pred, zero_division=0)), 4),
+            "f1": round(float(f1_score(y_d, y_pred, zero_division=0)), 4),
             "precision": round(float(precision_score(y_d, y_pred, zero_division=0)), 4),
-            "recall":    round(float(recall_score(y_d, y_pred, zero_division=0)), 4),
+            "recall": round(float(recall_score(y_d, y_pred, zero_division=0)), 4),
         }
-        print(f"  [{diff}] F1={results[diff]['f1']:.4f}  "
-              f"P={results[diff]['precision']:.4f}  "
-              f"R={results[diff]['recall']:.4f}  "
-              f"(n={len(idx)})")
+        print(
+            f"  [{diff}] F1={results[diff]['f1']:.4f}  "
+            f"P={results[diff]['precision']:.4f}  "
+            f"R={results[diff]['recall']:.4f}  "
+            f"(n={len(idx)})"
+        )
 
     return results
 
@@ -150,6 +182,7 @@ def evaluate_by_difficulty(model, X_test, y_test, meta):
 # ---------------------------------------------------------------------------
 # Error analysis
 # ---------------------------------------------------------------------------
+
 
 def error_analysis(model, X_test, y_test, meta):
     """

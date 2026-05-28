@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-EXPOSE 5000
+COPY tira/predict_tira.py /app/predict_tira.py
+COPY tira/run.sh /run.sh
 
-CMD ["python", "-m", "app.main"]
+RUN chmod +x /run.sh
+
+ENTRYPOINT ["/run.sh"]

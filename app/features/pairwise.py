@@ -19,8 +19,7 @@ also supports via mode="concat" for comparison.
 import numpy as np
 
 
-def build_pairwise_dataset(problems, feature_pipeline, min_sentences=3,
-                           mode="diff"):
+def build_pairwise_dataset(problems, feature_pipeline, min_sentences=3, mode="diff"):
     """
     Build the training matrix X, label vector y, and metadata.
 
@@ -44,9 +43,14 @@ def build_pairwise_dataset(problems, feature_pipeline, min_sentences=3,
     X_rows, y_rows, meta, groups = [], [], [], []
     problem_idx = 0
 
-    for problem in problems:
+    for idxproblem, problem in enumerate(problems):
+
+        # Showing progress every 100 problems, since this can be slow.
+        if idxproblem % 100 == 0:
+            print(f"[pairwise] Processing problem {idxproblem}/{len(problems)} ...")
+
         sentences = problem["sentences"]
-        changes   = problem["changes"]
+        changes = problem["changes"]
 
         if len(sentences) < min_sentences:
             continue
@@ -64,11 +68,13 @@ def build_pairwise_dataset(problems, feature_pipeline, min_sentences=3,
 
             X_rows.append(pair_vec)
             y_rows.append(label)
-            meta.append({
-                "problem_id": problem["problem_id"],
-                "difficulty": problem["difficulty"],
-                "pair_index": i,
-            })
+            meta.append(
+                {
+                    "problem_id": problem["problem_id"],
+                    "difficulty": problem["difficulty"],
+                    "pair_index": i,
+                }
+            )
             groups.append(problem_idx)
 
         problem_idx += 1
@@ -76,8 +82,8 @@ def build_pairwise_dataset(problems, feature_pipeline, min_sentences=3,
     if not X_rows:
         raise ValueError("No pairs found. Check that the dataset loaded correctly.")
 
-    X      = np.stack(X_rows, axis=0).astype(np.float32)
-    y      = np.array(y_rows, dtype=np.int32)
+    X = np.stack(X_rows, axis=0).astype(np.float32)
+    y = np.array(y_rows, dtype=np.int32)
     groups = np.array(groups, dtype=np.int32)
 
     return X, y, meta, groups

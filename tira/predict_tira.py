@@ -10,17 +10,16 @@ import os
 import sys
 from pathlib import Path
 
-# Add app/ to path so we can import the project’s modules
-APP_DIR = Path(__file__).resolve().parent / "software" / "app"
+APP_DIR = Path("/app")
 sys.path.insert(0, str(APP_DIR))
 
-from data.loader import load_split  # you must ensure this works on plain text?
-from features.pipeline import FeaturePipeline
-from utils.io import load_model
+from app.data.loader import load_split  # you must ensure this works on plain text?
+from app.features.pipeline import FeaturePipeline
+from app.utils.io import load_model
 
 # Paths baked into the image
-MODEL_PATH = Path(__file__).resolve().parent / "software" / "model.pkl"
-CONFIG_PATH = Path(__file__).resolve().parent / "software" / "feature_config.json"
+MODEL_PATH = Path("/app/model.pkl")
+CONFIG_PATH = Path("/app/feature_config.json")
 
 
 def load_feature_config():

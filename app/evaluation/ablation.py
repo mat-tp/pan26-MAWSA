@@ -20,10 +20,10 @@ import os
 
 import numpy as np
 
-from evaluation.metrics import cross_validate_model
-from features.pipeline import ALL_GROUPS, FeaturePipeline
-from features.pairwise import build_pairwise_dataset
-from models.classifiers import build_model
+from app.evaluation.metrics import cross_validate_model
+from app.features.pipeline import ALL_GROUPS, FeaturePipeline
+from app.features.pairwise import build_pairwise_dataset
+from app.models.classifiers import build_model
 
 
 def run_leave_one_out(problems, model_name="mlp", n_splits=5, groups=None):
@@ -44,8 +44,14 @@ def run_leave_one_out(problems, model_name="mlp", n_splits=5, groups=None):
     baseline_f1 = baseline["test_f1_mean"]
     print(f"  Baseline F1 = {baseline_f1:.4f}")
 
-    results = [{"group": "ALL", "f1": baseline_f1, "f1_std": baseline["test_f1_std"],
-                "f1_drop": 0.0}]
+    results = [
+        {
+            "group": "ALL",
+            "f1": baseline_f1,
+            "f1_std": baseline["test_f1_std"],
+            "f1_drop": 0.0,
+        }
+    ]
 
     for group in active_groups:
         ablated = [g for g in active_groups if g != group]
@@ -54,12 +60,14 @@ def run_leave_one_out(problems, model_name="mlp", n_splits=5, groups=None):
         X, y, _, grps = build_pairwise_dataset(problems, fp)
         res = cross_validate_model(build_model(model_name), X, y, grps, n_splits)
         drop = round(baseline_f1 - res["test_f1_mean"], 4)
-        results.append({
-            "group":    f"ALL - {group}",
-            "f1":       res["test_f1_mean"],
-            "f1_std":   res["test_f1_std"],
-            "f1_drop":  drop,
-        })
+        results.append(
+            {
+                "group": f"ALL - {group}",
+                "f1": res["test_f1_mean"],
+                "f1_std": res["test_f1_std"],
+                "f1_drop": drop,
+            }
+        )
         print(f"  F1 = {res['test_f1_mean']:.4f}  drop = {drop:+.4f}")
 
     results.sort(key=lambda r: -r["f1_drop"])
@@ -80,11 +88,13 @@ def run_single_group(problems, model_name="mlp", n_splits=5, groups=None):
         fp = FeaturePipeline(groups=[group])
         X, y, _, grps = build_pairwise_dataset(problems, fp)
         res = cross_validate_model(build_model(model_name), X, y, grps, n_splits)
-        results.append({
-            "group":  group,
-            "f1":     res["test_f1_mean"],
-            "f1_std": res["test_f1_std"],
-        })
+        results.append(
+            {
+                "group": group,
+                "f1": res["test_f1_mean"],
+                "f1_std": res["test_f1_std"],
+            }
+        )
         print(f"  F1 = {res['test_f1_mean']:.4f} ± {res['test_f1_std']:.4f}")
 
     results.sort(key=lambda r: -r["f1"])

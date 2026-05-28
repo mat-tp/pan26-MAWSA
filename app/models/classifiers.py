@@ -24,7 +24,8 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.svm import SVC, LinearSVC
 
 
 def make_logistic_regression(C=1.0):
@@ -32,16 +33,21 @@ def make_logistic_regression(C=1.0):
     Logistic Regression baseline.
     Coefficients give direct feature-level interpretability.
     """
-    return Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", LogisticRegression(
-            C=C,
-            class_weight="balanced",
-            solver="lbfgs",
-            max_iter=1000,
-            random_state=42,
-        )),
-    ])
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "clf",
+                LogisticRegression(
+                    C=C,
+                    class_weight="balanced",
+                    solver="lbfgs",
+                    max_iter=1000,
+                    random_state=42,
+                ),
+            ),
+        ]
+    )
 
 
 def make_svm(C=1.0):
@@ -49,17 +55,45 @@ def make_svm(C=1.0):
     SVM with RBF kernel.
     probability=True enables predict_proba for threshold tuning.
     """
-    return Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", SVC(
-            kernel="rbf",
-            C=C,
-            gamma="scale",
-            class_weight="balanced",
-            probability=True,
-            random_state=42,
-        )),
-    ])
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "clf",
+                SVC(
+                    kernel="rbf",
+                    C=C,
+                    gamma="scale",
+                    class_weight="balanced",
+                    probability=True,
+                    random_state=42,
+                ),
+            ),
+        ]
+    )
+
+
+def make_linear_svc(C=1.0):
+    """
+    LinearSVC — O(n) replacement for RBF SVM.
+    CalibratedClassifierCV wrapper adds predict_proba so AUC scoring works.
+    """
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "clf",
+                CalibratedClassifierCV(
+                    LinearSVC(
+                        C=C,
+                        class_weight="balanced",
+                        max_iter=2000,
+                        random_state=42,
+                    )
+                ),
+            ),
+        ]
+    )
 
 
 def make_mlp():
@@ -72,24 +106,29 @@ def make_mlp():
       - train quickly without a GPU,
       - remain compatible with permutation importance analysis.
     """
-    return Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", MLPClassifier(
-            hidden_layer_sizes=(128, 64),   # 2 layers — per project spec
-            activation="relu",
-            solver="adam",
-            alpha=1e-3,                     # L2 regularisation
-            learning_rate="adaptive",
-            learning_rate_init=1e-3,
-            max_iter=300,
-            early_stopping=True,
-            validation_fraction=0.1,
-            n_iter_no_change=15,
-            batch_size=64,
-            random_state=42,
-            verbose=False,
-        )),
-    ])
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "clf",
+                MLPClassifier(
+                    hidden_layer_sizes=(128, 64),  # 2 layers — per project spec
+                    activation="relu",
+                    solver="adam",
+                    alpha=1e-3,  # L2 regularisation
+                    learning_rate="adaptive",
+                    learning_rate_init=1e-3,
+                    max_iter=300,
+                    early_stopping=True,
+                    validation_fraction=0.1,
+                    n_iter_no_change=15,
+                    batch_size=64,
+                    random_state=42,
+                    verbose=False,
+                ),
+            ),
+        ]
+    )
 
 
 def make_naive_bayes():
@@ -97,10 +136,12 @@ def make_naive_bayes():
     Naive Bayes baseline.
     Very fast; useful as a lower bound / sanity check.
     """
-    return Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", GaussianNB()),
-    ])
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("clf", GaussianNB()),
+        ]
+    )
 
 
 def make_knn(k=5):
@@ -108,30 +149,30 @@ def make_knn(k=5):
     K-Nearest Neighbours baseline.
     No explicit training — useful for debugging feature spaces.
     """
-    return Pipeline([
-        ("scaler", StandardScaler()),
-        ("clf", KNeighborsClassifier(n_neighbors=k, metric="euclidean")),
-    ])
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            ("clf", KNeighborsClassifier(n_neighbors=k, metric="euclidean")),
+        ]
+    )
 
 
 # Registry: name → factory function.
 # Used by evaluation scripts to iterate over all models automatically.
 MODEL_REGISTRY = {
     "logistic_regression": make_logistic_regression,
-    "svm":                 make_svm,
-    "mlp":                 make_mlp,
-    "naive_bayes":         make_naive_bayes,
-    "knn":                 make_knn,
+    # "svm":               make_svm,       # disabled — RBF kernel, O(n²) memory
+    "linear_svc": make_linear_svc,
+    "mlp": make_mlp,
+    "naive_bayes": make_naive_bayes,
+    "knn": make_knn,
 }
 
 
 def build_model(name, **kwargs):
     """Instantiate and return the named model (unfitted)."""
     if name not in MODEL_REGISTRY:
-        raise KeyError(
-            f"Unknown model '{name}'. "
-            f"Available: {list(MODEL_REGISTRY)}"
-        )
+        raise KeyError(f"Unknown model '{name}'. " f"Available: {list(MODEL_REGISTRY)}")
     return MODEL_REGISTRY[name](**kwargs)
 
 

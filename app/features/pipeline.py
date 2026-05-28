@@ -21,7 +21,13 @@ Usage:
 
 import numpy as np
 
-from features import char_ngrams, function_words, lexical, pos_features, punctuation
+from app.features import (
+    char_ngrams,
+    function_words,
+    lexical,
+    pos_features,
+    punctuation,
+)
 
 # Available feature groups in extraction order.
 # Order matters for ablation reproducibility — do not change without note.
@@ -110,8 +116,10 @@ class FeaturePipeline:
 
     def describe(self):
         """Print a summary of the active feature groups and dimensions."""
-        print(f"FeaturePipeline — {len(self.groups)} group(s), "
-              f"{self.n_features} features total")
+        print(
+            f"FeaturePipeline — {len(self.groups)} group(s), "
+            f"{self.n_features} features total"
+        )
         for g in self.groups:
             print(f"  [{g}]")
         if self.use_per_word_fw:
