@@ -54,51 +54,14 @@ def process_files(model, fp, txt_files, output_dir: Path):
         print(f"[tira] Wrote {output_file}")
 
 
-def scan_inputs(input_base: Path):
-    """
-    Returns list of (txt_file, level_or_None) tuples.
-    Tries subdir layout first; falls back to flat root scan.
-    Also prints a full directory tree for debugging.
-    """
-    print(f"[tira] Scanning input tree:")
-    for root, dirs, files in os.walk(str(input_base)):
-        rel = Path(root).relative_to(input_base)
-        print(f"[tira]   {rel}/  files={files}")
-
-    # Try subdirs first — only count a level as "present" if it has files
-    results = {}  # level -> [Path]
-    for level in LEVELS:
-        level_dir = input_base / level
-        if not level_dir.exists():
-            continue
-        # Accept .txt or bare problem-N files
-        files = (
-            list(level_dir.glob("*.txt"))
-            or list(level_dir.glob("*.text"))
-            or [
-                f
-                for f in level_dir.iterdir()
-                if f.is_file() and re.search(r"problem-\d+", f.name)
-            ]
-        )
-        if files:
-            results[level] = files
-
-    if results:
-        return results  # {level: [files]}
-
-    # Flat fallback — search root and one level deep
-    flat = (
-        list(input_base.glob("*.txt"))
-        or list(input_base.glob("*.text"))
-        or list(input_base.glob("**/*.txt"))
-    )
-    if flat:
-        print(f"[tira] Using flat layout: {len(flat)} file(s) in root")
-        return {None: flat}  # None signals flat output
-
-    print(f"[tira] Warning: No input files found anywhere under {input_base}")
-    return {}
+def find_txt_files(directory: Path):
+    """Find .txt files in dir itself or one sub-level (e.g. train/)."""
+    files = list(directory.glob("*.txt"))
+    if not files:
+        files = [
+            f for sub in directory.iterdir() if sub.is_dir() for f in sub.glob("*.txt")
+        ]
+    return files
 
 
 def main():
@@ -117,6 +80,12 @@ def main():
     print(f"[tira] input:  {input_base}")
     print(f"[tira] output: {output_base}")
 
+    # Debug: print full tree
+    print("[tira] Input tree:")
+    for root, dirs, files in os.walk(str(input_base)):
+        rel = Path(root).relative_to(input_base)
+        print(f"[tira]   {rel}/  {files}")
+
     model = load_model(MODEL_PATH)
     cfg = load_feature_config()
     fp = FeaturePipeline(
@@ -125,16 +94,32 @@ def main():
     )
     print(f"[tira] Pipeline ready: {fp.n_features} features")
 
-    found = scan_inputs(input_base)
+    wrote_anything = False
 
-    for level, files in found.items():
-        if level is None:
-            # flat layout — write directly into output_base
-            process_files(model, fp, files, output_base)
-        else:
-            # subdir layout — write into subdir AND flat root
-            process_files(model, fp, files, output_base / level)
-            process_files(model, fp, files, output_base)  # TIRA validates flat root
+    # --- Try per-level layout (handles easy/, easy/train/, etc.) ---
+    for level in LEVELS:
+        level_dir = input_base / level
+        if not level_dir.exists():
+            continue
+        files = find_txt_files(level_dir)
+        if not files:
+            print(f"[tira] Warning: No text files found under {level_dir}")
+            continue
+        print(f"[tira] {level}: {len(files)} file(s)")
+        # Write into output_base/level/ (primary — what TIRA validates)
+        process_files(model, fp, files, output_base / level)
+        wrote_anything = True
+
+    # --- Flat fallback: files directly in input root ---
+    if not wrote_anything:
+        flat_files = list(input_base.glob("*.txt"))
+        if flat_files:
+            print(f"[tira] Flat layout: {len(flat_files)} file(s)")
+            process_files(model, fp, flat_files, output_base)
+            wrote_anything = True
+
+    if not wrote_anything:
+        print(f"[tira] ERROR: No input files found anywhere under {input_base}")
 
     print("[tira] Done.")
 
