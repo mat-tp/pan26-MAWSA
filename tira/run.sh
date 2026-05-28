@@ -1,2 +1,4 @@
 #!/bin/bash
-exec python /app/predict_tira.py "$@"
+set -e
+
+python /app/predict_tira.py "$@"
