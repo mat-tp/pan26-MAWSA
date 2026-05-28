@@ -12,11 +12,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# NLTK resources
-RUN python -c "import nltk; \
-    nltk.download('punkt'); \
-    nltk.download('averaged_perceptron_tagger'); \
-    nltk.download('universal_tagset')"
+# # NLTK resources
+# RUN python -c "import nltk; \
+#     nltk.download('punkt'); \
+#     nltk.download('averaged_perceptron_tagger'); \
+#     nltk.download('universal_tagset')"
 
 # ---------------------------
 # IMPORTANT: correct model path
