@@ -26,4 +26,4 @@ COPY tira/predict_tira.py /app/predict_tira.py
 COPY tira/run.sh          /run.sh
 RUN chmod +x /run.sh
 
-ENTRYPOINT ["/run.sh"]
+ENTRYPOINT ["/bin/bash", "/run.sh"]

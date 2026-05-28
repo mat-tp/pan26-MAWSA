@@ -5,6 +5,7 @@ Called as: python predict_tira.py -i INPUT_DIR -o OUTPUT_DIR
 """
 
 import argparse
+from html import parser
 import json
 import os
 import sys
@@ -76,15 +77,8 @@ def process_level(model, fp, input_level_dir: Path, output_level_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-i",
-        "--input",
-        required=True,
-        help="Input directory (contains easy/, medium/, hard/)",
-    )
-    parser.add_argument(
-        "-o", "--output", required=True, help="Output directory (will be created)"
-    )
+    parser.add_argument("-i", "--input", required=False, default="/input")
+    parser.add_argument("-o", "--output", required=False, default="/output")
     args = parser.parse_args()
 
     input_base = Path(args.input)
