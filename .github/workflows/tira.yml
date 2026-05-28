@@ -28,7 +28,9 @@ jobs:
       - name: Submit to TIRA
         run: |
           tira-cli login --token ${{ secrets.TIRA_CLIENT_TOKEN }}
-          tira-cli verify-installation
+          tira-cli verify-installation \
+          --task multi-author-writing-style-analysis-2026 \
+          --team redblinkinglight
           tira-cli code-submission \
             --path ${{ inputs.directory }} \
             --task multi-author-writing-style-analysis-2026 \
