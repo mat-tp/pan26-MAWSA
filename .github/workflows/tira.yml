@@ -1,19 +1,35 @@
-name: TIRA Submission
+name: Upload Software to TIRA
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      directory:
+        description: "Root directory"
+        required: true
+        default: .
 
 jobs:
-  tira-submit:
+  submit:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.8
+
+      - name: Install TIRA CLI
+        run: |
+          pip install --upgrade pip
+          pip install tira
 
       - name: Submit to TIRA
-        uses: pan-webis/tira-action@v1
-        with:
-          task: multi-author-writing-style-analysis-2026
-          client_token: ${{ secrets.TIRA_CLIENT_TOKEN }}
+        run: |
+          tira-cli login --token ${{ secrets.TIRA_CLIENT_TOKEN }}
+          tira-cli verify-installation
+          tira-cli code-submission \
+            --path ${{ inputs.directory }} \
+            --task multi-author-writing-style-analysis-2026 \
+            --dataset multi-author-writing-style-analysis-2026/smoketest-20260330-training
