@@ -1,0 +1,19 @@
+name: TIRA Submission
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  tira-submit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Submit to TIRA
+        uses: pan-webis/tira-action@v1
+        with:
+          task: multi-author-writing-style-analysis-2026
+          client_token: ${{ secrets.TIRA_CLIENT_TOKEN }}
