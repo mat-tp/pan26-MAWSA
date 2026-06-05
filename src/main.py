@@ -25,36 +25,34 @@ import sys
 
 import numpy as np
 
-# Add app/ to path so imports work regardless of working directory
+# Add src/ to path so all package imports resolve from the correct root
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from sklearn.naive_bayes import GaussianNB
-
-from app.data.loader import (
+from data.loader import (
     dataset_stats,
     flatten_problems,
     load_all,
     load_split,
 )
-from app.evaluation.ablation import (
+from evaluation.ablation import (
     run_leave_one_out,
     run_single_group,
     save_ablation_csv,
 )
-from app.evaluation.importance import (
+from evaluation.importance import (
     logistic_coefficients,
     permutation_importance,
 )
-from app.evaluation.metrics import (
+from evaluation.metrics import (
     compare_all_models,
     evaluate_by_difficulty,
     evaluate_model,
     error_analysis,
 )
-from app.features.pipeline import FeaturePipeline
-from app.features.pairwise import build_pairwise_dataset
-from app.models.classifiers import train_model
-from app.utils.config import (
+from features.pipeline import FeaturePipeline
+from features.pairwise import build_pairwise_dataset
+from models.classifiers import train_model
+from utils.config import (
     ABLATION_LOO_PATH,
     ABLATION_SGL_PATH,
     ACTIVE_FEATURE_GROUPS,
@@ -73,7 +71,7 @@ from app.utils.config import (
     RANDOM_SEED,
     USE_PER_WORD_FW,
 )
-from app.utils.io import (
+from utils.io import (
     load_model,
     save_csv,
     save_json,
@@ -383,7 +381,7 @@ def main():
     parser.add_argument(
         "--subset",
         type=float,
-        default=0.35,
+        default=0.05,
         help="Fraction of training data to use (kept on 0.35 on 8 GB machines)",
     )
     args = parser.parse_args()

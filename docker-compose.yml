@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # Main application service
+  app:
+    build: .
+    image: author-switch-detector:latest
+    container_name: author-switch-detector
+
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./dataset:/app/dataset
+      - ./outputs:/app/outputs
+
+    environment:
+      - PYTHONPATH=/app/src
+      - DATA_DIR=/app/data
+  
+    command: python -m src.main --mode train
+  
+  # Jupyter notebook service
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: app
+    image: author-switch-detector:jupyter
+    container_name: author-switch-jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./notebooks:/app/notebooks
+    environment:
+      - PYTHONPATH=/app/src
+      - DATA_DIR=/app/data
+      - CACHE_ENABLED=true
+    command: jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+
+  # Testing service
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: app
+    image: author-switch-detector:test
+    container_name: author-switch-test
+    volumes:
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - ./tests:/app/tests:ro
+    environment:
+      - PYTHONPATH=/app/src
+      - DATA_DIR=/app/data
+      - CACHE_ENABLED=false
+    command: pytest tests/ -v --tb=short
+
+  # MLflow tracking server (optional)
+  mlflow:
+    image: python:3.14-slim
+    container_name: author-switch-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlruns
+    working_dir: /mlflow
+    command: >
+      sh -c "pip install mlflow && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri /mlruns"
+    profiles:
+      - mlflow
