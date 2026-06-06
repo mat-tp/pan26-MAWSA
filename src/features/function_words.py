@@ -169,16 +169,38 @@ def extract_batch(sentences, per_word=False):
     """
     Vectorised batch extraction.
 
+    Pre-allocates the output array and fills it row-by-row, eliminating
+    the per-sentence list-append and final vstack overhead.
+
     Args:
         sentences: list of strings
-        per_word:  if True, append per-word frequency vector (extract_per_word)
+        per_word:  if True, append per-word frequency vector
     """
-    rows = []
-    for s in sentences:
-        base = extract(s)
+    word_list   = INDIVIDUAL_WORDS if per_word else None
+    n_base      = len(NAMES)
+    n_pw        = len(INDIVIDUAL_WORDS) if per_word else 0
+    n_cols      = n_base + n_pw
+    n           = len(sentences)
+    out         = np.zeros((n, n_cols), dtype=np.float32)
+
+    for i, sentence in enumerate(sentences):
+        tokens   = _TOKEN_RE.findall(sentence.lower())
+        n_tokens = max(1, len(tokens))
+        counts   = Counter(tokens)
+
+        fw_tokens       = [t for t in tokens if t in FUNCTION_WORDS]
+        fw_count        = len(fw_tokens)
+        fw_ratio        = fw_count / n_tokens
+        fw_unique_ratio = len(set(fw_tokens)) / max(1, fw_count)
+        pronoun_ratio   = sum(1 for t in tokens if t in PRONOUNS) / n_tokens
+
+        out[i, 0] = fw_count
+        out[i, 1] = fw_ratio
+        out[i, 2] = fw_unique_ratio
+        out[i, 3] = pronoun_ratio
+
         if per_word:
-            pw = extract_per_word(s)
-            rows.append(np.concatenate([base, pw]))
-        else:
-            rows.append(base)
-    return np.vstack(rows).astype(np.float32)
+            for j, w in enumerate(INDIVIDUAL_WORDS):
+                out[i, n_base + j] = counts.get(w, 0) / n_tokens
+
+    return out

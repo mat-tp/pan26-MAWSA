@@ -150,6 +150,49 @@ class FeaturePipeline:
         """
         return self.extract_batch([sentence])[0]
 
+
+    def extract_split(self, sentences):
+        """
+        Return (dense_features, sparse_features) separately.
+        Dense = lexical/punctuation/function_words/pos/ngram
+        Sparse = char_ngrams CSR matrix
+        """
+        from scipy.sparse import csr_matrix
+        dense_parts = []
+        sparse_part = None
+
+        if "lexical" in self.groups:
+            dense_parts.append(lexical.extract_batch(sentences))
+        if "punctuation" in self.groups:
+            dense_parts.append(punctuation.extract_batch(sentences))
+        if "function_words" in self.groups:
+            dense_parts.append(
+                function_words.extract_batch(
+                    sentences,
+                    per_word=self.use_per_word_fw
+                )
+            )
+        if "pos" in self.groups:
+            dense_parts.append(pos_features.extract_batch(sentences))
+        if self.ngram_enabled and self._ngram_extractor:
+            dense_parts.append(self._ngram_extractor.extract_batch(sentences))
+
+        if "char_ngrams" in self.groups:
+            sparse_part = char_ngrams.extract_batch(sentences)
+        else:
+            sparse_part = csr_matrix((len(sentences), 0), dtype=np.float32)
+
+        dense = (
+            np.ascontiguousarray(
+                np.hstack(dense_parts),
+                dtype=np.float32
+            )
+            if dense_parts
+            else np.empty((len(sentences), 0), dtype=np.float32)
+        )
+        return dense, sparse_part
+
+
     def extract_batch(self, sentences, batch_size=None, show_progress=False):
         """
         Extract features for a list of sentences with true batch processing.
@@ -194,56 +237,34 @@ class FeaturePipeline:
     def _extract_batch_single(self, sentences, show_progress=False):
         """
         Core batch extraction: process all sentences at once per feature group.
-        
+
+        Routes through extract_split() so that char-ngrams remain in CSR
+        format until the very last step.  The final toarray() only touches
+        the 12 288-column sparse block once, immediately before hstacking —
+        avoiding a transient full-width dense intermediate.
+
         Args:
             sentences: list of strings
             show_progress: print timing info
-            
+
         Returns:
-            numpy array of shape (n_sentences, n_features)
+            numpy array of shape (n_sentences, n_features), dtype float32
         """
-        n_sentences = len(sentences)
-        feature_groups = []
-        
-        # Process each feature group on all sentences at once
-        # This is the key optimization: no per-sentence Python loops
-        
-        if "lexical" in self.groups:
-            if show_progress:
-                print(f"[pipeline] Extracting lexical features for {n_sentences} sentences...")
-            lex_feats = lexical.extract_batch(sentences)
-            feature_groups.append(lex_feats)
-        
-        if "punctuation" in self.groups:
-            punct_feats = punctuation.extract_batch(sentences)
-            feature_groups.append(punct_feats)
-        
-        if "function_words" in self.groups:
-            fw_feats = function_words.extract_batch(sentences, per_word=self.use_per_word_fw)
-            feature_groups.append(fw_feats)
-        
-        if "char_ngrams" in self.groups:
-            char_feats = char_ngrams.extract_batch(sentences)
-            feature_groups.append(char_feats)
-        
-        if "pos" in self.groups:
-            pos_feats = pos_features.extract_batch(sentences)
-            feature_groups.append(pos_feats)
-        
-        if self.ngram_enabled and self._ngram_extractor:
-            ngram_feats = self._ngram_extractor.extract_batch(sentences)
-            feature_groups.append(ngram_feats)
-        
-        # Efficient single hstack operation
-        if len(feature_groups) == 1:
-            features = feature_groups[0]
+        if show_progress:
+            print(
+                f"[pipeline] Extracting features for {len(sentences)} sentences..."
+            )
+
+        dense, sparse = self.extract_split(sentences)
+
+        # sparse may be a (n, 0) placeholder when char_ngrams is disabled;
+        # toarray() on it is free (no allocation).
+        if sparse.shape[1] == 0:
+            features = dense
         else:
-            features = np.hstack(feature_groups)
-        
-        # Ensure float32 for GPU compatibility and memory efficiency
-        features = np.ascontiguousarray(features, dtype=np.float32)
-        
-        return features
+            features = np.hstack([dense, sparse.toarray()])
+
+        return np.ascontiguousarray(features, dtype=np.float32)
 
     def extract_document(self, sentences, use_cache=True, document_id=None):
         """

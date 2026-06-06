@@ -20,6 +20,7 @@ RAW_DIR      = os.path.join(_ROOT, "dataset", "mawsa26-pan-zenodo-DATA")
 OUTPUTS_DIR  = os.path.join(_ROOT, "dataset", "outputs")
 CACHE_DIR    = os.path.join(OUTPUTS_DIR, "cache")
 MODELS_DIR   = os.path.join(OUTPUTS_DIR, "models")
+PLOTS_DIR    = os.path.join(OUTPUTS_DIR, "plots")
 
 # Concrete output paths
 MODEL_PATH          = os.path.join(MODELS_DIR,  "model.pkl")
@@ -30,8 +31,20 @@ IMPORTANCE_PATH     = os.path.join(OUTPUTS_DIR, "feature_importance.json")
 ABLATION_LOO_PATH   = os.path.join(OUTPUTS_DIR, "ablation_loo.csv")
 ABLATION_SGL_PATH   = os.path.join(OUTPUTS_DIR, "ablation_single.csv")
 
+# Plot output paths (all saved as PNG, no plt.show() calls)
+PLOT_CV_PATH           = os.path.join(PLOTS_DIR, "cv_model_comparison.png")
+PLOT_CONFUSION_PATH    = os.path.join(PLOTS_DIR, "confusion_matrix.png")
+PLOT_ROC_PATH          = os.path.join(PLOTS_DIR, "roc_curve.png")
+PLOT_PR_PATH           = os.path.join(PLOTS_DIR, "precision_recall_curve.png")
+PLOT_THRESHOLD_PATH    = os.path.join(PLOTS_DIR, "threshold_optimization.png")
+PLOT_IMPORTANCE_PATH   = os.path.join(PLOTS_DIR, "feature_importance.png")
+PLOT_ABLATION_LOO_PATH = os.path.join(PLOTS_DIR, "ablation_loo.png")
+PLOT_ABLATION_SGL_PATH = os.path.join(PLOTS_DIR, "ablation_single.png")
+PLOT_TRAINING_LOG_PATH = os.path.join(PLOTS_DIR, "training_log.png")
+PLOT_CLASS_DIST_PATH   = os.path.join(PLOTS_DIR, "class_distribution.png")
+
 # Ensure output directories exist when this module is first imported
-for _d in [OUTPUTS_DIR, CACHE_DIR, MODELS_DIR]:
+for _d in [OUTPUTS_DIR, CACHE_DIR, MODELS_DIR, PLOTS_DIR]:
     os.makedirs(_d, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,3 +119,16 @@ PERM_IMP_TOP_K:   int = 30   # features to display
 # ─────────────────────────────────────────────────────────────────────────────
 
 CACHE_ENABLED: bool = True   # set False to always re-extract features
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plot settings
+# ─────────────────────────────────────────────────────────────────────────────
+
+# DPI for saved plots (150 is a good balance of quality and file size)
+PLOT_DPI: int = 150
+
+# Style for matplotlib plots
+PLOT_STYLE: str = "seaborn-v0_8-whitegrid"
+
+# Whether to generate plots during training (set False for headless/CI runs)
+GENERATE_PLOTS: bool = True

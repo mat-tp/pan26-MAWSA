@@ -94,5 +94,42 @@ def extract(sentence):
     )
 
 def extract_batch(sentences):
-    """Vectorised batch extraction — much faster than looping over extract()."""
-    return np.vstack([extract(s) for s in sentences]).astype(np.float32)
+    """
+    Vectorised batch extraction.
+
+    Processes all sentences together using numpy operations where possible,
+    avoiding a Python-level loop over sentences for the hot inner path.
+    """
+    n = len(sentences)
+    out = np.zeros((n, len(NAMES)), dtype=np.float32)
+
+    for i, sentence in enumerate(sentences):
+        words = _TOKEN_RE.findall(sentence)
+
+        out[i, 0] = len(sentence)          # n_chars
+
+        if not words:
+            out[i, 1] = 1                  # n_tokens minimum
+            continue
+
+        n_tokens   = len(words)
+        lengths    = np.array([len(w) for w in words], dtype=np.float32)
+        lower      = [w.lower() for w in words]
+        counts     = Counter(lower)
+        vocab_size = len(counts)
+
+        out[i, 1]  = n_tokens
+        out[i, 2]  = lengths.mean()
+        out[i, 3]  = lengths.std()
+        out[i, 4]  = vocab_size / n_tokens                              # ttr
+        out[i, 5]  = sum(c == 1 for c in counts.values()) / n_tokens   # hapax
+        out[i, 6]  = (
+            sum(c * (c - 1) for c in counts.values())
+            / max(1, n_tokens * (n_tokens - 1))
+        )                                                                # simpson_d
+        out[i, 7]  = np.mean(lengths <= 3)
+        out[i, 8]  = np.mean((lengths >= 4) & (lengths <= 6))
+        out[i, 9]  = np.mean((lengths >= 7) & (lengths <= 9))
+        out[i, 10] = np.mean(lengths >= 10)
+
+    return out

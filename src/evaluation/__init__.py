@@ -10,7 +10,14 @@ from evaluation.metrics import (
     print_classification_report,
     plot_confusion_matrix,
     plot_roc_curve,
+    plot_precision_recall_curve,
     find_optimal_threshold,
+    compare_all_models,
+    evaluate_by_difficulty,
+    error_analysis,
+    plot_training_log,
+    plot_class_distribution,
+    save_diagnostic_plots,
 )
 
 from evaluation.importance import (

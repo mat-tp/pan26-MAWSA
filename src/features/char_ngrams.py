@@ -103,5 +103,5 @@ def extract_batch(sentences):
     # each vec.transform returns (n_sents, n_features) so we hstack the three
     # per-sentence result — but they're already in (n_sents, n_feats) shape.
     from scipy.sparse import hstack as sp_hstack
-    combined = sp_hstack(mats)
-    return combined.toarray().astype(np.float32)
+    combined = sp_hstack(mats, format='csr')
+    return combined

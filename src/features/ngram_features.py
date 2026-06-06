@@ -273,5 +273,16 @@ class NGramExtractor:
 
         return names
     def extract_batch(self, sentences):
-        """Vectorised batch extraction for all sentences."""
-        return np.vstack([self.extract(s) for s in sentences]).astype(np.float32)
+        """
+        Vectorised batch extraction.
+
+        Pre-allocates the output array and fills it row-by-row, eliminating
+        the per-sentence list-append and final vstack overhead of the old
+        np.vstack([self.extract(s) for s in sentences]) pattern.
+        """
+        n_feats = len(self.names)
+        n       = len(sentences)
+        out     = np.empty((n, n_feats), dtype=np.float32)
+        for i, s in enumerate(sentences):
+            out[i] = self.extract(s)
+        return out

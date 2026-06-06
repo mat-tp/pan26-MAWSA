@@ -1,9 +1,14 @@
 """
 POS stylometric features.
+
+Optimized for large-scale extraction:
+    - Batch POS tagging via nltk.pos_tag_sents()
+    - Sentence-level tag caching
+    - Chunked processing for memory efficiency
+    - No dependency on punkt/punkt_tab
 """
 
 from collections import Counter
-from functools import lru_cache
 
 import numpy as np
 
@@ -59,99 +64,263 @@ NAMES = (
     + NAMES_EXTRA
 )
 
+# ------------------------------------------------------------------
+# Cache
+# ------------------------------------------------------------------
+
+_TAG_CACHE = {}
+
+_TAG_CACHE_MAX = 100_000
+
+POS_BATCH_SIZE = 5000
+
+
+# ------------------------------------------------------------------
+# NLTK
+# ------------------------------------------------------------------
 
 def ensure_nltk_data():
-
+    """
+    Download only resources actually required by this module.
+    """
     import nltk
 
-    resources = [
-        "punkt",
-        "averaged_perceptron_tagger_eng",
-        "universal_tagset",
-    ]
+    resources = {
+        "taggers/averaged_perceptron_tagger_eng":
+            "averaged_perceptron_tagger_eng",
+    }
 
-    for resource in resources:
+    for path, package in resources.items():
         try:
-            nltk.data.find(resource)
+            nltk.data.find(path)
         except LookupError:
-            nltk.download(resource, quiet=True)
+            nltk.download(package, quiet=True)
 
 
-@lru_cache(maxsize=50000)
+# ------------------------------------------------------------------
+# Tagging
+# ------------------------------------------------------------------
+
 def _tag(sentence):
+    """
+    Cached single-sentence tagging.
+    """
+
+    if sentence in _TAG_CACHE:
+        return _TAG_CACHE[sentence]
 
     import nltk
+    from nltk.tokenize import wordpunct_tokenize
 
-    tokens = nltk.word_tokenize(sentence)
+    tokens = wordpunct_tokenize(sentence)
 
     tagged = nltk.pos_tag(
         tokens,
         tagset="universal",
     )
 
-    return tuple(
+    tags = tuple(
         tag
         for _, tag in tagged
     )
 
+    if len(_TAG_CACHE) >= _TAG_CACHE_MAX:
+        _TAG_CACHE.clear()
+
+    _TAG_CACHE[sentence] = tags
+
+    return tags
+
+
+# ------------------------------------------------------------------
+# Feature extraction
+# ------------------------------------------------------------------
 
 def extract(sentence):
-    """Extract POS features for a single sentence."""
+    """
+    Extract POS features for a single sentence.
+    """
+
     try:
         tags = list(_tag(sentence))
     except Exception:
         tags = []
+
     return _tags_to_features(tags)
 
 
 def extract_batch(sentences):
     """
-    Batch POS extraction using nltk.pos_tag_sents for 5-10x speedup over
-    calling pos_tag one sentence at a time.
+    Fast batch POS extraction.
 
-    Results for unseen sentences are cached via the per-sentence lru_cache
-    so repeated calls (CV folds, ablation rounds) hit the cache.
+    Strategy:
+        1. Reuse cached sentences.
+        2. Collect uncached sentences.
+        3. Tag them in chunks using pos_tag_sents().
+        4. Convert all tag sequences to stylometric features.
+
+    Returns:
+        np.ndarray shape:
+            (n_sentences, len(NAMES))
     """
+
     import nltk
+    from nltk.tokenize import wordpunct_tokenize
 
     ensure_nltk_data()
 
-    # Split into cached (already tagged) and fresh
-    fresh_idx  = []
-    fresh_sents = []
-    tag_results = [None] * len(sentences)
+    n_sentences = len(sentences)
 
-    for i, s in enumerate(sentences):
-        cached = _tag.cache_info()  # noqa: just warm-up check
-        try:
-            # Try cache first via the single-sentence function
-            tag_results[i] = list(_tag(s))
-        except Exception:
-            tag_results[i] = []
+    if n_sentences == 0:
+        return np.empty(
+            (0, len(NAMES)),
+            dtype=np.float32,
+        )
 
-    # Already populated via lru_cache — vstack and return
-    return np.vstack([
-        _tags_to_features(tags) for tags in tag_results
-    ]).astype(np.float32)
+    tag_results = [None] * n_sentences
 
+    fresh_positions = []
+    fresh_sentences = []
+
+    # ----------------------------------------------------------
+    # Cache lookup
+    # ----------------------------------------------------------
+
+    for i, sentence in enumerate(sentences):
+
+        cached = _TAG_CACHE.get(sentence)
+
+        if cached is not None:
+            tag_results[i] = list(cached)
+        else:
+            fresh_positions.append(i)
+            fresh_sentences.append(sentence)
+
+    # ----------------------------------------------------------
+    # Batch tagging
+    # ----------------------------------------------------------
+
+    if fresh_sentences:
+
+        print(
+            f"[pos] Tagging "
+            f"{len(fresh_sentences):,} "
+            f"uncached sentences..."
+        )
+
+        for start in range(
+            0,
+            len(fresh_sentences),
+            POS_BATCH_SIZE,
+        ):
+
+            end = min(
+                start + POS_BATCH_SIZE,
+                len(fresh_sentences),
+            )
+
+            batch_sentences = fresh_sentences[start:end]
+            batch_positions = fresh_positions[start:end]
+
+            batch_tokens = [
+                wordpunct_tokenize(s)
+                for s in batch_sentences
+            ]
+
+            batch_tagged = nltk.pos_tag_sents(
+                batch_tokens,
+                tagset="universal",
+            )
+
+            for pos_idx, sentence, tagged in zip(
+                batch_positions,
+                batch_sentences,
+                batch_tagged,
+            ):
+
+                tags = tuple(
+                    tag
+                    for _, tag in tagged
+                )
+
+                if len(_TAG_CACHE) >= _TAG_CACHE_MAX:
+                    _TAG_CACHE.clear()
+
+                _TAG_CACHE[sentence] = tags
+
+                tag_results[pos_idx] = list(tags)
+
+            if start % 50000 == 0:
+                print(
+                    f"[pos] Processed "
+                    f"{end:,}/{len(fresh_sentences):,}"
+                )
+
+    # ----------------------------------------------------------
+    # Convert tags → features
+    # ----------------------------------------------------------
+
+    return np.vstack(
+        [
+            _tags_to_features(tags or [])
+            for tags in tag_results
+        ]
+    ).astype(np.float32)
+
+
+# ------------------------------------------------------------------
+# Feature construction
+# ------------------------------------------------------------------
 
 def _tags_to_features(tags):
-    """Convert a list of POS tags to the feature vector (shared by extract + batch)."""
+    """
+    Convert POS tag sequence into stylometric features.
+    """
+
     if not tags:
-        return np.zeros(len(NAMES), dtype=np.float32)
+        return np.zeros(
+            len(NAMES),
+            dtype=np.float32,
+        )
 
     n = max(1, len(tags))
-    tag_counts  = Counter(tags)
-    tag_dist    = [tag_counts.get(t, 0) / n for t in UNIVERSAL_TAGS]
 
-    bigram_counts = Counter(zip(tags[:-1], tags[1:]))
-    n_bigrams = max(1, len(tags) - 1)
-    bigram_feats  = [bigram_counts.get(pair, 0) / n_bigrams for pair in POS_BIGRAMS_TRACKED]
+    tag_counts = Counter(tags)
+
+    tag_dist = [
+        tag_counts.get(tag, 0) / n
+        for tag in UNIVERSAL_TAGS
+    ]
+
+    bigram_counts = Counter(
+        zip(tags[:-1], tags[1:])
+    )
+
+    n_bigrams = max(
+        1,
+        len(tags) - 1,
+    )
+
+    bigram_feats = [
+        bigram_counts.get(pair, 0)
+        / n_bigrams
+        for pair in POS_BIGRAMS_TRACKED
+    ]
 
     nouns = tag_counts.get("NOUN", 0)
     verbs = tag_counts.get("VERB", 0)
-    adjs  = tag_counts.get("ADJ",  0)
+    adjs = tag_counts.get("ADJ", 0)
     prons = tag_counts.get("PRON", 0)
-    extra = [nouns / max(1, verbs), adjs / max(1, nouns), prons / max(1, nouns)]
 
-    return np.array(tag_dist + bigram_feats + extra, dtype=np.float32)
+    extra = [
+        nouns / max(1, verbs),
+        adjs / max(1, nouns),
+        prons / max(1, nouns),
+    ]
+
+    return np.array(
+        tag_dist
+        + bigram_feats
+        + extra,
+        dtype=np.float32,
+    )

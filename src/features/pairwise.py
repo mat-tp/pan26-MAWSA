@@ -64,12 +64,11 @@ Cleanup — chunk_size removed from build_pairwise_dataset():
     It was never used inside the builder; chunk_size belongs to
     iter_chunks() only, where the caller supplies it.
 
-Architectural note — vecs is still a full dense matrix:
-    extract_batch() currently returns shape (n_sentences, n_total) dense.
-    The pending improvement is a FeaturePipeline.extract_split() that
-    returns (dense_mat, sparse_csr) directly, eliminating the transient
-    full-width dense allocation. Tracked separately; all the indexing
-    (dense_idx / sparse_idx) is already in place for a one-line swap.
+Architectural note — extract_split() is now fully wired in:
+    build_pairwise_dataset() calls feature_pipeline.extract_split() and
+    carries (dense_mat, sparse_mat) separately through the build loop.
+    The full-width dense hstack is gone; peak RAM is now bounded by one
+    problem's worth of features at a time.
 
 On-disk layout  CACHE_DIR/pairwise/<mode>_<key>/
     dense.dat           np.memmap  (n_pairs, pair_dense_cols)  float32
@@ -357,9 +356,13 @@ class PairwiseDataset:
         """
         Load and vertically stack all sparse chunks into one CSR matrix.
 
-        Chunks are vstacked one at a time so peak RAM is roughly:
-            final_matrix + one_chunk
-        rather than all chunks loaded simultaneously.
+        Collects all chunks into a list first, then calls sp_vstack once.
+        This is O(n) in chunk count rather than the O(n²) pattern of
+        repeatedly doing ``result = sp_vstack([result, chunk])``, which
+        re-allocates the growing result on every iteration.
+
+        Peak RAM ≈ final_matrix + the last chunk loaded (SciPy vstack
+        builds a new matrix from the COO data of all inputs).
 
         This can still consume several GB for large datasets.
         Prefer iter_chunks() for training loops.
@@ -367,12 +370,8 @@ class PairwiseDataset:
         from scipy.sparse import vstack as sp_vstack
         if not self._chunk_files:
             return csr_matrix((self.n_pairs, self.n_sparse), dtype=np.float32)
-        result = load_npz(self._chunk_files[0])
-        for path in self._chunk_files[1:]:
-            chunk  = load_npz(path)
-            result = sp_vstack([result, chunk], format="csr")
-            del chunk
-        return result
+        chunks = [load_npz(path) for path in self._chunk_files]
+        return sp_vstack(chunks, format="csr")
 
     # ------------------------------------------------------------------
     # Chunk iterator — truly bounded memory  (Fix 1)
@@ -550,10 +549,7 @@ def build_pairwise_dataset(
     # ── Column layout ──────────────────────────────────────────────────────
     all_names    = feature_pipeline.feature_names
     sparse_mask  = _sparse_col_mask(all_names)
-    dense_mask   = ~sparse_mask
-    dense_idx    = np.where(dense_mask)[0]
-    sparse_idx   = np.where(sparse_mask)[0]
-    n_dense      = int(dense_mask.sum())
+    n_dense      = int((~sparse_mask).sum())
     n_sparse     = int(sparse_mask.sum())
 
     # Fix 4: compute actual output column count BEFORE memmap allocation
@@ -637,30 +633,33 @@ def build_pairwise_dataset(
         n_sents   = len(sentences)
         n_pairs_p = n_sents - 1
 
-        # Sentence features
+        # Sentence features — keep dense and sparse separate throughout.
+        # This avoids the full-width hstack that was the original memory problem.
         if use_sc and ck in sent_index:
-            vecs = np.load(sent_index[ck]).astype(np.float32, copy=False)
+            # Cache stores only the dense block; sparse must be re-extracted.
+            # (Storing sparse as .npy would require toarray(), defeating the point.)
+            dense_mat = np.load(sent_index[ck]).astype(np.float32, copy=False)
+            _, sparse_mat = feature_pipeline.extract_split(sentences)
         else:
-            vecs = feature_pipeline.extract_batch(sentences).astype(np.float32, copy=False)
+            dense_mat, sparse_mat = feature_pipeline.extract_split(sentences)
             if use_sc:
-                new_sent[ck] = vecs
+                # Cache only the dense block — it's small and contiguous.
+                new_sent[ck] = dense_mat
 
-        left_all  = vecs[:-1]   # (n_pairs_p, n_total)
-        right_all = vecs[1:]    # (n_pairs_p, n_total)
+        left_dense  = dense_mat[:-1]   # (n_pairs_p, n_dense)
+        right_dense = dense_mat[1:]
+        left_sp     = sparse_mat[:-1]  # already CSR slices
+        right_sp    = sparse_mat[1:]
 
-        # Dense columns → write to memmap (correct cols via Fix 4)
-        pair_dense = compute_pairwise_features(
-            left_all[:, dense_idx], right_all[:, dense_idx], mode
-        )
+        # Dense columns → write to memmap
+        pair_dense = compute_pairwise_features(left_dense, right_dense, mode)
         X_mm[row: row + n_pairs_p] = pair_dense
 
         # Sparse columns → compute diff entirely in sparse arithmetic (Fix 5).
-        # Convert to CSR *before* subtraction so the operation stays sparse.
-        # Explicitly call .tocsr() on the result — SciPy may return another
-        # format (e.g. BSR) from sparse arithmetic depending on version.
-        # Then abs() the non-zero values in-place via .data; no dense array.
-        left_sp  = csr_matrix(left_all[:, sparse_idx].astype(np.float32, copy=False))
-        right_sp = csr_matrix(right_all[:, sparse_idx].astype(np.float32, copy=False))
+        # Slices from a CSR matrix are already CSR; tocsr() guarantees format.
+        # abs() the non-zero values in-place via .data; no dense intermediate.
+        left_sp  = left_sp.tocsr().astype(np.float32, copy=False)
+        right_sp = right_sp.tocsr().astype(np.float32, copy=False)
         pair_sparse = (left_sp - right_sp).tocsr()
         pair_sparse.data = np.abs(pair_sparse.data)    # in-place, stays sparse
         chunk_path = os.path.join(cache_dir, f"sparse_{prob_idx:06d}.npz")
@@ -679,7 +678,7 @@ def build_pairwise_dataset(
 
         row += n_pairs_p
 
-        del vecs, left_all, right_all, pair_dense, left_sp, right_sp, pair_sparse
+        del dense_mat, sparse_mat, left_dense, right_dense, pair_dense, left_sp, right_sp, pair_sparse
         if prob_idx % 100 == 0:
             gc.collect()
 
@@ -826,16 +825,18 @@ def build_pairwise_from_texts(
 
     all_names   = feature_pipeline.feature_names
     sparse_mask = _sparse_col_mask(all_names)
-    dense_idx   = np.where(~sparse_mask)[0]
-    sparse_idx  = np.where( sparse_mask)[0]
 
-    f1 = feature_pipeline.extract_batch(texts1).astype(np.float32, copy=False)
-    f2 = feature_pipeline.extract_batch(texts2).astype(np.float32, copy=False)
+    f1_dense, f1_sparse = feature_pipeline.extract_split(texts1)
+    f2_dense, f2_sparse = feature_pipeline.extract_split(texts2)
 
-    X_dense = compute_pairwise_features(f1[:, dense_idx], f2[:, dense_idx], mode)
-    # Fix 5: CSR arithmetic throughout, guaranteed CSR format (Fix 5).
-    f1_sp    = csr_matrix(f1[:, sparse_idx])
-    f2_sp    = csr_matrix(f2[:, sparse_idx])
+    X_dense = compute_pairwise_features(
+        f1_dense.astype(np.float32, copy=False),
+        f2_dense.astype(np.float32, copy=False),
+        mode,
+    )
+    # Fix 5: CSR arithmetic throughout, guaranteed CSR format.
+    f1_sp    = f1_sparse.tocsr().astype(np.float32, copy=False)
+    f2_sp    = f2_sparse.tocsr().astype(np.float32, copy=False)
     X_sparse = (f1_sp - f2_sp).tocsr()
     X_sparse.data = np.abs(X_sparse.data)   # in-place abs on non-zeros only
     meta = [
