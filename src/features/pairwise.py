@@ -1,561 +1,905 @@
 """
 Pairwise dataset construction for author switch detection.
-Optimized with vectorized pair generation, multi-level caching,
-multiple distance metrics, and optional multiprocessing.
 
-Key improvements:
-  - Vectorized pair creation: left=feats[:-1], right=feats[1:]
-  - Sentence feature cache (reuse across experiments)
-  - Pairwise feature cache (reuse across models)
-  - Multiple distance modes: diff, concat, cosine, euclidean, combined
-  - Optional multiprocessing for sentence extraction
+Memory design (v7)
+==================
+Fix 1 — _merge_sparse_chunks() was not constant-memory:
+    Removed entirely. Sparse chunk files (sparse_000000.npz …) are kept
+    as first-class citizens on disk. PairwiseDataset.iter_chunks() loads
+    each chunk file directly, so peak sparse RAM = 1 chunk at a time.
+    No sparse_merged.npz is ever written or read.
+
+Fix 2 — X_sparse property could load several GB at once:
+    Property now raises RuntimeError with a clear message directing the
+    caller to iter_chunks() or to_memory(). A new X_sparse_unsafe()
+    method is provided for callers that genuinely need the full matrix
+    and have confirmed they have the RAM.
+
+Fix 3 — to_memory() reconstructed 121k per-pair dicts:
+    to_memory() now returns problem_meta (one record per problem) directly
+    instead of expanding it into per-pair dicts. The return signature
+    is updated; callers that need per-pair expansion can call
+    expand_meta(problem_meta, y) explicitly.
+
+Fix 4 — memmap allocated with wrong column count for non-diff modes:
+    pair_dense_cols is computed from mode BEFORE allocating the memmap,
+    so "combined" (+2 cols), "concat" (×2 cols), "cosine"/"euclidean"
+    (1 col) are all handled correctly.
+
+Fix 5 — sparse computation was still secretly dense:
+    left_sp / right_sp are now converted to CSR *before* subtraction so
+    that (left_sp - right_sp) is a sparse operation throughout.
+    The result is explicitly .tocsr() to guarantee format across SciPy
+    versions, then .data is abs()'d in-place — no dense intermediate.
+
+Fix 6 — cache hit failed when n_sparse == 0:
+    The `and chunk_files` guard in the cache-hit check caused a miss
+    whenever char-ngrams were disabled (no chunk files written).
+    Removed; PairwiseDataset handles an empty chunk list correctly.
+
+Fix 7 — iter_chunks assumed chunk files matched problem_meta order:
+    __init__ now validates len(_chunk_files) == len(problem_meta) when
+    n_sparse > 0, raising a clear RuntimeError on partial-write corruption.
+
+Fix 8 — iter_chunks yielded nothing when n_sparse == 0:
+    When _chunk_files is empty the chunk-file loop never ran, so callers
+    with n_sparse == 0 saw 0 batches despite n_pairs > 0. A dedicated
+    dense-only path now handles this case, yielding zero-column sparse
+    matrices so the caller API stays uniform. Dead `empty_sp` variable
+    from an earlier draft is also removed.
+
+Fix 9 — cache corruption detected early via n_chunks in meta.npz:
+    n_chunks is now stored in meta.npz. _load_dataset_from_cache()
+    compares it against both the actual chunk files found on disk AND
+    the length of the loaded problem_meta, raising immediately on either
+    mismatch before constructing PairwiseDataset.
+
+Fix 10 — X_sparse_unsafe loaded all chunks simultaneously:
+    Previous implementation did `[load_npz(p) for p in chunk_files]`
+    which held every chunk in RAM before vstacking, giving peak RAM ≈
+    2× the final matrix. Now vstacks one chunk at a time so peak RAM ≈
+    final matrix + one chunk.
+
+Cleanup — chunk_size removed from build_pairwise_dataset():
+    It was never used inside the builder; chunk_size belongs to
+    iter_chunks() only, where the caller supplies it.
+
+Architectural note — vecs is still a full dense matrix:
+    extract_batch() currently returns shape (n_sentences, n_total) dense.
+    The pending improvement is a FeaturePipeline.extract_split() that
+    returns (dense_mat, sparse_csr) directly, eliminating the transient
+    full-width dense allocation. Tracked separately; all the indexing
+    (dense_idx / sparse_idx) is already in place for a one-line swap.
+
+On-disk layout  CACHE_DIR/pairwise/<mode>_<key>/
+    dense.dat           np.memmap  (n_pairs, pair_dense_cols)  float32
+    sparse_NNNNNN.npz   per-problem CSR chunks (never merged)
+    meta.npz            y, groups, n_dense, n_sparse, n_pairs,
+                        pair_dense_cols, n_chunks (scalars)
+    problem_meta.pkl    compact per-problem table (list of dicts)
 """
 
+from __future__ import annotations
+
+import gc
+import glob
 import hashlib
 import json
 import os
 import pickle
+import shutil
 import time
+from typing import Iterator, List, Optional, Tuple
+
 import numpy as np
-from pathlib import Path
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
+from scipy.sparse import csr_matrix, load_npz, save_npz
 
 from utils.config import CACHE_DIR, CACHE_ENABLED
-from features.ngram_features import NGramExtractor
 from features.pipeline import FeaturePipeline
 
 
 # ============================================================================
-# Cache Management Utilities
+# Types
 # ============================================================================
 
-def _compute_cache_key(problems_hash, feat_config_dict):
-    """
-    Create a deterministic hash of the input data and feature config.
-    
-    Args:
-        problems_hash: Hash of the problems list content
-        feat_config_dict: Feature configuration dictionary
-    """
-    data_str = json.dumps({
-        "problems_hash": problems_hash,
-        "feat_config": feat_config_dict,
-    }, sort_keys=True)
+DatasetTuple = Tuple[np.ndarray, np.ndarray, List[dict], np.ndarray]
+
+
+# ============================================================================
+# Cache key helpers
+# ============================================================================
+
+def _compute_cache_key(problems_hash: str, feat_config_dict: dict) -> str:
+    """Deterministic hash of (problem fingerprint, feature config)."""
+    data_str = json.dumps(
+        {"problems_hash": problems_hash, "feat_config": feat_config_dict},
+        sort_keys=True,
+    )
     return hashlib.sha256(data_str.encode()).hexdigest()
 
 
-def _hash_problems(problems):
-    """Create a hash of the problems list for cache identification."""
-    prob_info = []
-    for p in problems:
-        prob_info.append({
-            "problem_id": p["problem_id"],
-            "difficulty": p["difficulty"],
+def _hash_problems(problems: list) -> str:
+    """Fast hash of problem list — IDs + shape only, no raw text."""
+    info = [
+        {
+            "problem_id":  p["problem_id"],
+            "difficulty":  p["difficulty"],
             "n_sentences": len(p["sentences"]),
-            "n_changes": len(p["changes"]),
             "changes_sum": sum(p["changes"]),
-        })
-    return hashlib.sha256(json.dumps(prob_info, sort_keys=True).encode()).hexdigest()
+        }
+        for p in problems
+    ]
+    return hashlib.sha256(json.dumps(info, sort_keys=True).encode()).hexdigest()
 
 
-def _get_pairwise_cache_path(cache_key, mode):
-    """Get cache paths for pairwise data and metadata."""
-    cache_dir = os.path.join(CACHE_DIR, "pairwise")
-    os.makedirs(cache_dir, exist_ok=True)
-    
-    features_path = os.path.join(cache_dir, f"{mode}_{cache_key}.npz")
-    meta_path = os.path.join(cache_dir, f"{mode}_{cache_key}.pkl")
-    
-    return features_path, meta_path
+def _hash_feature_names(names: list) -> str:
+    """Hash of the full feature-name list so stale caches are detected."""
+    return hashlib.sha256("|".join(names).encode()).hexdigest()[:16]
+
+
+def _get_pairwise_cache_dir(cache_key: str, mode: str) -> str:
+    d = os.path.join(CACHE_DIR, "pairwise", f"{mode}_{cache_key}")
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
 # ============================================================================
-# Distance / Similarity Metrics
+# Sparse-column mask
 # ============================================================================
 
-def compute_pairwise_features(left_features, right_features, mode="diff"):
+def _sparse_col_mask(feature_names: list) -> np.ndarray:
     """
-    Compute pairwise features from left and right sentence feature matrices.
-    Fully vectorized - no Python loops.
-    
-    Args:
-        left_features: numpy array (n_pairs, n_features)
-        right_features: numpy array (n_pairs, n_features)
-        mode: distance mode ('diff', 'concat', 'cosine', 'euclidean', 'combined')
-    
-    Returns:
-        numpy array of pairwise features
-    
-    Modes:
-        diff:      |f1 - f2|                    (n_features)
-        concat:    [f1, f2]                      (2 * n_features)
-        cosine:    1 - cosine_similarity         (1 feature)
-        euclidean: ||f1 - f2||_2                 (1 feature)
-        combined:  [diff, cosine, euclidean]     (n_features + 2)
+    Boolean mask: True for char-ngram columns (cng2_*, cng3_*, cng4_*).
+    These are ~12 288 near-zero columns — the dominant memory source.
+    """
+    return np.array(
+        [n.startswith(("cng2_", "cng3_", "cng4_")) for n in feature_names],
+        dtype=bool,
+    )
+
+
+# ============================================================================
+# Dense column count for a given mode  (Fix 4)
+# ============================================================================
+
+def _pair_dense_cols(n_dense_feats: int, mode: str) -> int:
+    """
+    Return the number of output columns produced by compute_pairwise_features()
+    for the dense block, given the raw feature count and the requested mode.
+
+    This must be called BEFORE allocating the memmap so the shape is correct.
     """
     if mode == "diff":
-        return np.abs(left_features - right_features)
-    
-    elif mode == "concat":
-        return np.hstack([left_features, right_features])
-    
-    elif mode == "cosine":
-        # Vectorized cosine similarity
-        dot_product = np.sum(left_features * right_features, axis=1)
-        norm_left = np.linalg.norm(left_features, axis=1)
-        norm_right = np.linalg.norm(right_features, axis=1)
-        
-        # Avoid division by zero
-        denominator = norm_left * norm_right
-        cosine_sim = np.where(denominator > 0, dot_product / denominator, 0.0)
-        
-        # Return distance (1 - similarity) as a column vector
-        return (1.0 - cosine_sim).reshape(-1, 1).astype(np.float32)
-    
-    elif mode == "euclidean":
-        # Vectorized Euclidean distance
-        diff = left_features - right_features
-        euclidean_dist = np.sqrt(np.sum(diff * diff, axis=1))
-        return euclidean_dist.reshape(-1, 1).astype(np.float32)
-    
-    elif mode == "combined":
-        # All three metrics combined
-        diff_features = np.abs(left_features - right_features)
-        
-        # Cosine
-        dot_product = np.sum(left_features * right_features, axis=1)
-        norm_left = np.linalg.norm(left_features, axis=1)
-        norm_right = np.linalg.norm(right_features, axis=1)
-        denominator = norm_left * norm_right
-        cosine_sim = np.where(denominator > 0, dot_product / denominator, 0.0)
-        cosine_dist = (1.0 - cosine_sim).reshape(-1, 1)
-        
-        # Euclidean
-        diff_sq = (left_features - right_features) ** 2
-        euclidean_dist = np.sqrt(np.sum(diff_sq, axis=1)).reshape(-1, 1)
-        
-        return np.hstack([diff_features, cosine_dist, euclidean_dist]).astype(np.float32)
-    
-    else:
-        raise ValueError(f"Unknown mode: {mode}. Use 'diff', 'concat', 'cosine', 'euclidean', or 'combined'")
+        return n_dense_feats
+    if mode == "concat":
+        return n_dense_feats * 2
+    if mode in ("cosine", "euclidean"):
+        return 1
+    if mode == "combined":
+        return n_dense_feats + 2   # diff columns + cosine_distance + euclidean_distance
+    raise ValueError(
+        f"Unknown mode {mode!r}. "
+        "Choose: 'diff', 'concat', 'cosine', 'euclidean', 'combined'."
+    )
 
 
 # ============================================================================
-# Sentence Feature Extraction (with optional multiprocessing)
+# Pairwise distance metrics  (float32, vectorized)
 # ============================================================================
 
-def _extract_problem_features(problem, feature_pipeline, min_sentences):
+def compute_pairwise_features(
+    left: np.ndarray,
+    right: np.ndarray,
+    mode: str = "diff",
+) -> np.ndarray:
     """
-    Extract features for a single problem (used in multiprocessing).
-    
-    Args:
-        problem: problem dict
-        feature_pipeline: FeaturePipeline instance
-        min_sentences: minimum sentences required
-        
-    Returns:
-        tuple of (problem_id, sentences, changes, features, difficulty) or None
-    """
-    sentences = problem["sentences"]
-    changes = problem["changes"]
-    
-    if len(sentences) < min_sentences:
-        return None
-    
-    try:
-        # Extract sentence features
-        sent_features = feature_pipeline.extract_batch(sentences)
-        return (problem["problem_id"], sentences, changes, sent_features, problem["difficulty"])
-    except Exception as e:
-        print(f"[pairwise] Error extracting features for problem {problem['problem_id']}: {e}")
-        return None
+    Compute pairwise features from two (n, F) float32 matrices.
 
+    NOTE: when called for the *sparse* block, the caller always uses mode
+    "diff" and converts the result to CSR directly — see build loop.
 
-def _extract_sentence_features_sequential(problems, feature_pipeline, min_sentences, use_cache, cache_ids):
+    Returns float32 ndarray of shape (n, pair_dense_cols(F, mode)).
     """
-    Extract sentence features sequentially.
-    
-    Returns:
-        list of (problem_id, sentences, changes, sent_features, difficulty) tuples
-    """
-    results = []
-    
-    for prob_idx, problem in enumerate(problems):
-        problem_id = problem["problem_id"]
-        difficulty  = problem["difficulty"]
-        cache_key   = f"{difficulty}_{problem_id}"
-        sentences = problem["sentences"]
-        changes = problem["changes"]
-        
-        if len(sentences) < min_sentences:
-            continue
-        
-        # Try cache first
-        if use_cache and cache_ids is not None:
-            cached = cache_ids.get(cache_key)
-            if cached is not None:
-                results.append((problem_id, sentences, changes, cached, difficulty))
-                continue
-        
-        # Extract features
-        try:
-            sent_features = feature_pipeline.extract_batch(sentences)
-            results.append((problem_id, sentences, changes, sent_features, problem["difficulty"]))
-            
-            # Save to cache
-            if use_cache and cache_ids is not None:
-                cache_ids[cache_key] = sent_features
-        except Exception as e:
-            print(f"[pairwise] Error extracting features for problem {problem_id}: {e}")
-        
-        # Progress indicator
-        if (prob_idx + 1) % 50 == 0:
-            print(f"[pairwise] Extracted features for {prob_idx + 1}/{len(problems)} problems")
-    
-    return results
+    l = np.asarray(left,  dtype=np.float32)
+    r = np.asarray(right, dtype=np.float32)
 
+    if mode == "diff":
+        return np.abs(l - r)
 
-def _extract_sentence_features_parallel(problems, feature_pipeline, min_sentences, n_jobs):
-    """
-    Extract sentence features using multiprocessing.
-    
-    Args:
-        problems: list of problem dicts
-        feature_pipeline: FeaturePipeline instance (will be copied per worker)
-        min_sentences: minimum sentences required
-        n_jobs: number of parallel workers
-        
-    Returns:
-        list of (problem_id, sentences, changes, sent_features, difficulty) tuples
-    """
-    extract_func = partial(_extract_problem_features, 
-                          feature_pipeline=feature_pipeline,
-                          min_sentences=min_sentences)
-    
-    results = []
-    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-        futures = {executor.submit(extract_func, p): p["problem_id"] for p in problems}
-        
-        for future in as_completed(futures):
-            result = future.result()
-            if result is not None:
-                results.append(result)
-            
-            if len(results) % 50 == 0:
-                print(f"[pairwise] Extracted features for {len(results)} problems (parallel)")
-    
-    return results
+    if mode == "concat":
+        return np.hstack([l, r])
+
+    if mode == "cosine":
+        dot   = np.einsum("ij,ij->i", l, r)
+        denom = np.linalg.norm(l, axis=1) * np.linalg.norm(r, axis=1)
+        cos   = np.where(denom > 0, dot / denom, 0.0).astype(np.float32)
+        return (1.0 - cos).reshape(-1, 1)
+
+    if mode == "euclidean":
+        d = l - r
+        return np.sqrt(np.einsum("ij,ij->i", d, d)).astype(np.float32).reshape(-1, 1)
+
+    if mode == "combined":
+        diff_f = np.abs(l - r)
+        dot    = np.einsum("ij,ij->i", l, r)
+        denom  = np.linalg.norm(l, axis=1) * np.linalg.norm(r, axis=1)
+        cos_d  = (1.0 - np.where(denom > 0, dot / denom, 0.0)).astype(np.float32).reshape(-1, 1)
+        d2     = l - r
+        euc    = np.sqrt(np.einsum("ij,ij->i", d2, d2)).astype(np.float32).reshape(-1, 1)
+        return np.hstack([diff_f, cos_d, euc])
+
+    raise ValueError(
+        f"Unknown mode {mode!r}. "
+        "Choose: 'diff', 'concat', 'cosine', 'euclidean', 'combined'."
+    )
 
 
 # ============================================================================
-# Main Pairwise Dataset Builders
+# Per-pair meta expansion helper  (Fix 3 — separated from to_memory)
 # ============================================================================
 
-def build_pairwise_dataset(problems, feature_pipeline=None, min_sentences=3, 
-                          mode="diff", use_cache=True, n_jobs=1,
-                          cache_sentence_features=True):
+def expand_meta(problem_meta: list, y: np.ndarray) -> list:
     """
-    Build pairwise dataset from problems list with full optimizations.
-    
-    Args:
-        problems: list of problem dicts with 'sentences' and 'changes' keys
-        feature_pipeline: FeaturePipeline instance (created if None)
-        min_sentences: minimum sentences required per problem
-        mode: distance mode ('diff', 'concat', 'cosine', 'euclidean', 'combined')
-        use_cache: whether to use cached features (pairwise level)
-        n_jobs: number of parallel workers for sentence extraction (1 = sequential)
-        cache_sentence_features: whether to cache sentence features separately
-    
-    Returns:
-        X: feature matrix (n_samples, n_features)
-        y: labels array (n_samples,)
-        meta: metadata list for each pair
-        groups: group IDs (problem indices) for CV stratification
-    
-    Example:
-        >>> problems = load_all("data/train")
-        >>> # Fast with diff mode
-        >>> X, y, meta, groups = build_pairwise_dataset(problems)
-        >>> # With cosine similarity added
-        >>> X, y, meta, groups = build_pairwise_dataset(problems, mode="combined")
+    Expand compact per-problem metadata into one dict per pair.
+
+    Call this only when you genuinely need 121k dicts; most callers should
+    work with problem_meta directly.
     """
-    start_time = time.time()
-    
-    if feature_pipeline is None:
-        feature_pipeline = FeaturePipeline()
-    
-    # ---- Check pairwise cache ----
-    if use_cache and CACHE_ENABLED:
-        problems_hash = _hash_problems(problems)
-        feat_config = {
-            "groups": feature_pipeline.groups,
-            "use_per_word_fw": feature_pipeline.use_per_word_fw,
-            "mode": mode,
-            "min_sentences": min_sentences,
-            "ngram_enabled": feature_pipeline.ngram_enabled,
-            "ngram_max_n": getattr(feature_pipeline._ngram_extractor, 'max_n', None) if feature_pipeline.ngram_enabled else None,
-        }
-        cache_key = _compute_cache_key(problems_hash, feat_config)
-        features_path, meta_path = _get_pairwise_cache_path(cache_key, mode)
-        
-        if os.path.exists(features_path) and os.path.exists(meta_path):
-            print(f"[pairwise] Loading from pairwise cache: {features_path}")
-            data = np.load(features_path)
-            X = data["X"]
-            y = data["y"]
-            with open(meta_path, "rb") as f:
-                meta, groups = pickle.load(f)
-            
-            elapsed = time.time() - start_time
-            print(f"[pairwise] Loaded from cache in {elapsed:.1f}s: {X.shape[0]} pairs, {X.shape[1]} features")
-            return X, y, meta, groups
-    
-    print("[pairwise] Building pairwise dataset from scratch...")
-    
-    # ---- Fit n-gram models if needed ----
-    if feature_pipeline.ngram_enabled:
-        print("[pairwise] Fitting n-gram models...")
-        all_sentences = []
-        for problem in problems:
-            if len(problem["sentences"]) >= min_sentences:
-                all_sentences.extend(problem["sentences"])
-        feature_pipeline.fit(all_sentences)
-        print(f"[pairwise] Fitted on {len(all_sentences)} sentences")
-    
-    # ---- Load or extract sentence features ----
-    # Set up sentence cache
-    sentence_cache = {}
-    if use_cache and CACHE_ENABLED and cache_sentence_features:
-        # Check if sentence features are cached
-        problems_hash = _hash_problems(problems)
-        sent_cache_dir = os.path.join(CACHE_DIR, "sentence_features", problems_hash[:16])
-        
-        if os.path.exists(sent_cache_dir):
-            print(f"[pairwise] Loading sentence features from cache: {sent_cache_dir}")
-            for prob in problems:
-                prob_id    = prob["problem_id"]
-                diff       = prob["difficulty"]
-                ck         = f"{diff}_{prob_id}"
-                cache_file = os.path.join(sent_cache_dir, f"{diff}_{prob_id}.npy")
-                if os.path.exists(cache_file):
-                    sentence_cache[ck] = np.load(cache_file)
-            print(f"[pairwise] Loaded {len(sentence_cache)} cached sentence feature matrices")
-    
-    # Extract sentence features
-    print("[pairwise] Extracting sentence features...")
-    
-    if n_jobs > 1 and len(problems) > 10:
-        # Parallel extraction
-        print(f"[pairwise] Using {n_jobs} parallel workers")
-        extracted = _extract_sentence_features_parallel(
-            problems, feature_pipeline, min_sentences, n_jobs
-        )
-    else:
-        # Sequential extraction
-        extracted = _extract_sentence_features_sequential(
-            problems, feature_pipeline, min_sentences, use_cache, sentence_cache
-        )
-    
-    # Save sentence features to cache
-    if use_cache and CACHE_ENABLED and cache_sentence_features and len(sentence_cache) > 0:
-        problems_hash = _hash_problems(problems)
-        sent_cache_dir = os.path.join(CACHE_DIR, "sentence_features", problems_hash[:16])
-        os.makedirs(sent_cache_dir, exist_ok=True)
-        
-        for ck, feats in sentence_cache.items():
-            cache_file = os.path.join(sent_cache_dir, f"{ck}.npy")
-            if not os.path.exists(cache_file):
-                np.save(cache_file, feats)
-        
-        print(f"[pairwise] Saved {len(sentence_cache)} sentence feature matrices to cache")
-    
-    # ---- Build pairwise features (fully vectorized) ----
-    print(f"[pairwise] Building pairwise features with mode='{mode}'...")
-    
-    X_list = []
-    y_list = []
-    meta_list = []
-    groups_list = []
-    skipped_problems = 0
-    
-    for prob_idx, (problem_id, sentences, changes, sent_features, difficulty) in enumerate(extracted):
-        n_pairs = len(sentences) - 1
-        
-        if n_pairs < 1:
-            skipped_problems += 1
-            continue
-        
-        # Vectorized pair creation - key optimization!
-        left_features = sent_features[:-1]   # (n_pairs, n_features)
-        right_features = sent_features[1:]   # (n_pairs, n_features)
-        
-        # Compute pairwise features (single vectorized operation)
-        pair_matrix = compute_pairwise_features(left_features, right_features, mode)
-        
-        X_list.append(pair_matrix)
-        y_list.append(np.array(changes, dtype=np.int32))
-        
-        # Create metadata for each pair
-        for i in range(n_pairs):
-            meta_list.append({
-                "problem_id": problem_id,
-                "difficulty": difficulty,
-                "pair_idx": i,
-                "sentence1": sentences[i][:100],
-                "sentence2": sentences[i+1][:100],
-                "is_switch": bool(changes[i]),
+    meta = []
+    for rec in problem_meta:
+        pid   = rec["problem_id"]
+        diff  = rec["difficulty"]
+        start = rec["start_row"]
+        end   = rec["end_row"]
+        for pair_idx in range(end - start):
+            global_row = start + pair_idx
+            meta.append({
+                "problem_id": pid,
+                "difficulty": diff,
+                "pair_idx":   pair_idx,
+                "is_switch":  bool(y[global_row]),
             })
-            groups_list.append(prob_idx)
-        
-        # Progress indicator
-        if (prob_idx + 1) % 50 == 0:
-            print(f"[pairwise] Processed {prob_idx + 1}/{len(extracted)} problems")
-    
-    if skipped_problems > 0:
-        print(f"[pairwise] Skipped {skipped_problems} problems with insufficient pairs")
-    
-    # ---- Combine all pairs efficiently ----
-    X = np.vstack(X_list).astype(np.float32)
-    y = np.concatenate(y_list) if y_list else np.array([], dtype=np.int32)
-    
-    # Ensure contiguous memory layout for GPU compatibility
-    X = np.ascontiguousarray(X)
-    y = np.ascontiguousarray(y)
-    
-    elapsed = time.time() - start_time
-    print(f"[pairwise] Dataset built in {elapsed:.1f}s: {X.shape[0]} pairs, {X.shape[1]} features")
-    print(f"[pairwise] Class distribution: {np.sum(y == 0)} same, {np.sum(y == 1)} switch")
-    print(f"[pairwise] Memory usage: {X.nbytes / 1024**2:.1f} MB")
-    
-    # ---- Save to pairwise cache ----
-    if use_cache and CACHE_ENABLED:
-        problems_hash = _hash_problems(problems)
-        feat_config = {
-            "groups": feature_pipeline.groups,
-            "use_per_word_fw": feature_pipeline.use_per_word_fw,
-            "mode": mode,
-            "min_sentences": min_sentences,
-            "ngram_enabled": feature_pipeline.ngram_enabled,
-            "ngram_max_n": getattr(feature_pipeline._ngram_extractor, 'max_n', None) if feature_pipeline.ngram_enabled else None,
-        }
-        cache_key = _compute_cache_key(problems_hash, feat_config)
-        features_path, meta_path = _get_pairwise_cache_path(cache_key, mode)
-        
-        print(f"[pairwise] Saving to pairwise cache: {features_path}")
-        np.savez_compressed(features_path, X=X, y=y)
-        with open(meta_path, "wb") as f:
-            pickle.dump((meta_list, groups_list), f)
-    
-    return X, y, meta_list, groups_list
+    return meta
 
 
-def build_pairwise_from_texts(texts1, texts2, labels=None, feature_pipeline=None, mode="diff"):
+# ============================================================================
+# PairwiseDataset — iterator + lazy materialisation
+# ============================================================================
+
+class PairwiseDataset:
     """
-    Build pairwise dataset directly from two lists of texts.
-    Vectorized for efficiency.
-    
-    Args:
-        texts1: list of first sentences in each pair
-        texts2: list of second sentences in each pair
-        labels: optional list of labels (0/1)
-        feature_pipeline: FeaturePipeline instance
-        mode: distance mode ('diff', 'concat', 'cosine', 'euclidean', 'combined')
-    
-    Returns:
-        X: feature matrix
-        y: labels (or None if not provided)
-        meta: metadata
+    Lazy wrapper around the on-disk pairwise dataset.
+
+    Sparse data lives in individual per-problem chunk files.
+    No merged sparse matrix is ever written, so RAM is always bounded.
+
+    Iterate chunk-by-chunk for partial_fit / external-memory training:
+
+        for X_d, X_s, y_c in dataset.iter_chunks(chunk_size=5000):
+            model.partial_fit(
+                scipy.sparse.hstack([X_d, X_s]),
+                y_c, classes=[0, 1]
+            )
+
+    Or load everything at once (only if you have the RAM):
+
+        X_dense, y, problem_meta, groups = dataset.to_memory()
+        # If you also need sparse:
+        X_sparse = dataset.X_sparse_unsafe()
+    """
+
+    def __init__(
+        self,
+        cache_dir: str,
+        n_pairs: int,
+        n_dense: int,          # raw feature count (input side)
+        n_sparse: int,         # raw sparse feature count
+        pair_dense_cols: int,  # actual output columns in dense.dat (Fix 4)
+        y: np.ndarray,
+        groups: np.ndarray,
+        problem_meta: list,    # one dict per *problem* (not per pair)
+    ):
+        self.cache_dir       = cache_dir
+        self.n_pairs         = n_pairs
+        self.n_dense         = n_dense
+        self.n_sparse        = n_sparse
+        self.pair_dense_cols = pair_dense_cols
+        self.y               = y
+        self.groups          = groups
+        self.problem_meta    = problem_meta
+
+        self._dense_path = os.path.join(cache_dir, "dense.dat")
+
+        # Sorted list of per-problem sparse chunk files (Fix 1).
+        # When n_sparse == 0 this list is legitimately empty (Fix 6).
+        self._chunk_files: list = sorted(
+            glob.glob(os.path.join(cache_dir, "sparse_[0-9]*.npz"))
+        )
+
+        # Fix 7: guard against partial-write corruption / missing chunks.
+        # Only enforced when sparse features exist; an empty list is valid
+        # when n_sparse == 0.
+        if n_sparse > 0 and len(self._chunk_files) != len(problem_meta):
+            raise RuntimeError(
+                f"Sparse chunk count ({len(self._chunk_files)}) does not match "
+                f"problem_meta length ({len(problem_meta)}). "
+                "The cache may be partially written or corrupted. "
+                "Call clear_pairwise_cache() and rebuild."
+            )
+
+    # ------------------------------------------------------------------
+    # Dense accessor (always memmap — OS pages on demand)
+    # ------------------------------------------------------------------
+
+    @property
+    def X_dense(self) -> np.memmap:
+        return np.memmap(
+            self._dense_path, dtype=np.float32, mode="r",
+            shape=(self.n_pairs, self.pair_dense_cols),
+        )
+
+    # ------------------------------------------------------------------
+    # Sparse accessor — Fix 2: refuse silent OOM; provide escape hatch
+    # ------------------------------------------------------------------
+
+    @property
+    def X_sparse(self) -> None:
+        raise RuntimeError(
+            "Calling dataset.X_sparse would load the entire sparse matrix "
+            f"({self.n_pairs} × {self.n_sparse} float32) into RAM, which "
+            "may be several GB.\n"
+            "Use dataset.iter_chunks() for bounded-memory access, or call "
+            "dataset.X_sparse_unsafe() if you have confirmed you have "
+            "sufficient RAM."
+        )
+
+    def X_sparse_unsafe(self) -> csr_matrix:
+        """
+        Load and vertically stack all sparse chunks into one CSR matrix.
+
+        Chunks are vstacked one at a time so peak RAM is roughly:
+            final_matrix + one_chunk
+        rather than all chunks loaded simultaneously.
+
+        This can still consume several GB for large datasets.
+        Prefer iter_chunks() for training loops.
+        """
+        from scipy.sparse import vstack as sp_vstack
+        if not self._chunk_files:
+            return csr_matrix((self.n_pairs, self.n_sparse), dtype=np.float32)
+        result = load_npz(self._chunk_files[0])
+        for path in self._chunk_files[1:]:
+            chunk  = load_npz(path)
+            result = sp_vstack([result, chunk], format="csr")
+            del chunk
+        return result
+
+    # ------------------------------------------------------------------
+    # Chunk iterator — truly bounded memory  (Fix 1)
+    # ------------------------------------------------------------------
+
+    def iter_chunks(
+        self, chunk_size: int = 5_000
+    ) -> Iterator[Tuple[np.ndarray, csr_matrix, np.ndarray]]:
+        """
+        Yield (X_dense_chunk, X_sparse_chunk, y_chunk) slices.
+
+        Dense slices come from memmap (zero extra RAM beyond one slice).
+        Sparse slices come from loading one chunk file at a time, then
+        further slicing if the problem has more rows than chunk_size.
+        Peak RAM = one dense slice + one sparse chunk file.
+
+        When n_sparse == 0 (no char-ngrams) there are no chunk files.
+        A dedicated dense-only path still yields every batch with a
+        zero-column sparse placeholder so the caller API is uniform.
+        """
+        X_d = self.X_dense
+
+        # Fix 8 — dense-only path: no chunk files when n_sparse == 0
+        if self.n_sparse == 0:
+            for start in range(0, self.n_pairs, chunk_size):
+                end = min(start + chunk_size, self.n_pairs)
+                yield (
+                    X_d[start:end],
+                    csr_matrix((end - start, 0), dtype=np.float32),
+                    self.y[start:end],
+                )
+            return
+
+        # Normal path — one chunk file per problem
+        dense_row = 0
+        for prob_idx, chunk_path in enumerate(self._chunk_files):
+            rec       = self.problem_meta[prob_idx]
+            prob_rows = rec["end_row"] - rec["start_row"]
+            X_s_full  = load_npz(chunk_path)   # one problem at a time
+
+            # A single problem's chunk may itself exceed chunk_size
+            for inner_start in range(0, prob_rows, chunk_size):
+                inner_end    = min(inner_start + chunk_size, prob_rows)
+                global_start = dense_row + inner_start
+                global_end   = dense_row + inner_end
+                yield (
+                    X_d[global_start:global_end],
+                    X_s_full[inner_start:inner_end],
+                    self.y[global_start:global_end],
+                )
+
+            del X_s_full
+            gc.collect()
+            dense_row += prob_rows
+
+    # ------------------------------------------------------------------
+    # Full materialisation — Fix 3: return problem_meta, not 121k dicts
+    # ------------------------------------------------------------------
+
+    def to_memory(self) -> DatasetTuple:
+        """
+        Load dense data into RAM. Sparse is NOT loaded here.
+
+        Returns (X_dense, y, problem_meta, groups).
+
+        problem_meta is a list of per-problem dicts:
+            [{problem_id, difficulty, start_row, end_row}, …]
+
+        If you need per-pair expansion, call:
+            expand_meta(problem_meta, y)
+        If you need sparse, call:
+            dataset.X_sparse_unsafe()
+        """
+        X_dense = np.array(self.X_dense)  # copy memmap → contiguous RAM
+        return X_dense, self.y, self.problem_meta, self.groups
+
+    # ------------------------------------------------------------------
+    # Dunder helpers
+    # ------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return self.n_pairs
+
+    def __repr__(self) -> str:
+        return (
+            f"PairwiseDataset("
+            f"n_pairs={self.n_pairs}, "
+            f"pair_dense_cols={self.pair_dense_cols}, "
+            f"n_sparse={self.n_sparse}, "
+            f"problems={len(self.problem_meta)}, "
+            f"chunks={len(self._chunk_files)})"
+        )
+
+
+# ============================================================================
+# Sentence-feature cache helpers
+# ============================================================================
+
+def _build_sentence_cache_index(problems: list, problems_hash: str) -> tuple:
+    sent_cache_dir = os.path.join(CACHE_DIR, "sentence_features", problems_hash[:16])
+    index = {}
+    if os.path.isdir(sent_cache_dir):
+        for p in problems:
+            ck   = f"{p['difficulty']}_{p['problem_id']}"
+            path = os.path.join(sent_cache_dir, f"{ck}.npy")
+            if os.path.exists(path):
+                index[ck] = path
+    return sent_cache_dir, index
+
+
+def _flush_sentence_cache(sent_cache_dir: str, new_entries: dict) -> None:
+    if not new_entries:
+        return
+    os.makedirs(sent_cache_dir, exist_ok=True)
+    for ck, feats in new_entries.items():
+        path = os.path.join(sent_cache_dir, f"{ck}.npy")
+        if not os.path.exists(path):
+            np.save(path, feats)
+    print(f"[pairwise] Cached {len(new_entries)} sentence-feature matrices → {sent_cache_dir}")
+
+
+# ============================================================================
+# Main builder
+
+def build_pairwise_dataset(
+    problems: list,
+    feature_pipeline: Optional[FeaturePipeline] = None,
+    min_sentences: int = 3,
+    mode: str = "diff",
+    use_cache: bool = True,
+    n_jobs: int = 1,
+    cache_sentence_features: bool = True,
+) -> PairwiseDataset:
+    """
+    Build the pairwise training dataset without accumulating features in RAM.
+
+    Returns a PairwiseDataset which supports:
+      - Chunk iteration:   for X_d, X_s, y_c in ds.iter_chunks(chunk_size): ...
+      - Full dense load:   X_d, y, meta, groups = ds.to_memory()
+      - Direct attribute:  ds.X_dense, ds.y, ds.groups, ds.problem_meta
+      - Unsafe full load:  X_s = ds.X_sparse_unsafe()
+
+    chunk_size is intentionally NOT a parameter here — it belongs to
+    iter_chunks() so the caller can choose the right size at training time.
+
+    Memory strategy
+    ---------------
+    Dense features:
+        Pre-allocated np.memmap with the correct shape for the chosen mode
+        (Fix 4: pair_dense_cols computed before allocation).
+    Sparse features (char-ngrams):
+        Each problem's sparse block written directly as CSR to
+        sparse_NNNNNN.npz. No merge step — peak RAM = 1 chunk (Fix 1).
+        Sparse diff computed with CSR arithmetic — no dense intermediate
+        (Fix 5).
+    Metadata:
+        One compact record per *problem* (not per pair).
+    X_sparse property:
+        Raises RuntimeError to prevent silent OOM (Fix 2).
+    to_memory():
+        Returns problem_meta directly, no per-pair dict expansion (Fix 3).
+    Cache key:
+        Includes SHA-256 of feature_names to catch silent feature changes.
+    Cache hit with n_sparse == 0:
+        Chunk-file presence is not required for a cache hit (Fix 6).
+    Integrity check:
+        __init__ validates chunk count == problem count when n_sparse > 0
+        (Fix 7).
+    """
+    t0 = time.time()
+
+    if feature_pipeline is None:
+        feature_pipeline = FeaturePipeline()
+
+    # ── Column layout ──────────────────────────────────────────────────────
+    all_names    = feature_pipeline.feature_names
+    sparse_mask  = _sparse_col_mask(all_names)
+    dense_mask   = ~sparse_mask
+    dense_idx    = np.where(dense_mask)[0]
+    sparse_idx   = np.where(sparse_mask)[0]
+    n_dense      = int(dense_mask.sum())
+    n_sparse     = int(sparse_mask.sum())
+
+    # Fix 4: compute actual output column count BEFORE memmap allocation
+    pdc = _pair_dense_cols(n_dense, mode)
+
+    # ── Cache key ──────────────────────────────────────────────────────────
+    problems_hash = _hash_problems(problems)
+    feat_config   = {
+        "groups":             feature_pipeline.groups,
+        "use_per_word_fw":    feature_pipeline.use_per_word_fw,
+        "mode":               mode,
+        "min_sentences":      min_sentences,
+        "ngram_enabled":      feature_pipeline.ngram_enabled,
+        "ngram_max_n":        (
+            getattr(feature_pipeline._ngram_extractor, "max_n", None)
+            if feature_pipeline.ngram_enabled else None
+        ),
+        "feature_names_hash": _hash_feature_names(all_names),
+    }
+    cache_key = _compute_cache_key(problems_hash, feat_config)
+    cache_dir = _get_pairwise_cache_dir(cache_key, mode)
+
+    dense_path = os.path.join(cache_dir, "dense.dat")
+    meta_path  = os.path.join(cache_dir, "meta.npz")
+
+    # ── Try pairwise cache ─────────────────────────────────────────────────
+    # Fix 6: do NOT require chunk files to exist — when n_sparse == 0 no
+    # chunk files are written and the cache is still valid.
+    # PairwiseDataset.__init__ handles an empty _chunk_files list correctly.
+    if use_cache and CACHE_ENABLED:
+        if os.path.exists(dense_path) and os.path.exists(meta_path):
+            print(f"[pairwise] Cache hit → {cache_dir}")
+            return _load_dataset_from_cache(cache_dir, dense_path, meta_path)
+
+    print("[pairwise] Building pairwise dataset from scratch …")
+
+    # ── Filter valid problems ──────────────────────────────────────────────
+    valid       = [p for p in problems if len(p["sentences"]) >= min_sentences]
+    n_pairs_est = sum(len(p["sentences"]) - 1 for p in valid)
+
+    print(
+        f"[pairwise] {len(valid)} valid problems → ~{n_pairs_est} pairs | "
+        f"{n_dense} dense feats ({pdc} output cols) + {n_sparse} sparse feats"
+    )
+    dense_mb = n_pairs_est * pdc * 4 / 1e6
+    print(f"[pairwise] Dense memmap ≈ {dense_mb:.1f} MB on disk")
+
+    # ── Fit n-gram models ──────────────────────────────────────────────────
+    if feature_pipeline.ngram_enabled and not feature_pipeline._fitted:
+        all_sents = [s for p in valid for s in p["sentences"]]
+        print(f"[pairwise] Fitting n-gram LM on {len(all_sents)} sentences …")
+        feature_pipeline.fit(all_sents)
+
+    # ── Sentence-feature cache ─────────────────────────────────────────────
+    use_sc = use_cache and CACHE_ENABLED and cache_sentence_features
+    sent_cache_dir, sent_index = (
+        _build_sentence_cache_index(valid, problems_hash) if use_sc else ("", {})
+    )
+    new_sent: dict = {}
+
+    # ── Pre-allocate dense memmap with correct shape (Fix 4) ──────────────
+    X_mm = np.memmap(
+        dense_path, dtype=np.float32, mode="w+",
+        shape=(n_pairs_est, pdc),
+    )
+
+    # ── Compact metadata ───────────────────────────────────────────────────
+    y_buf      = np.empty(n_pairs_est, dtype=np.int8)
+    groups_buf = np.empty(n_pairs_est, dtype=np.int32)
+    problem_meta: list = []
+
+    row = 0
+
+    # ── Main loop — one problem at a time ─────────────────────────────────
+    for prob_idx, problem in enumerate(valid):
+        pid       = problem["problem_id"]
+        diff      = problem["difficulty"]
+        sentences = problem["sentences"]
+        changes   = problem["changes"]
+        ck        = f"{diff}_{pid}"
+        n_sents   = len(sentences)
+        n_pairs_p = n_sents - 1
+
+        # Sentence features
+        if use_sc and ck in sent_index:
+            vecs = np.load(sent_index[ck]).astype(np.float32, copy=False)
+        else:
+            vecs = feature_pipeline.extract_batch(sentences).astype(np.float32, copy=False)
+            if use_sc:
+                new_sent[ck] = vecs
+
+        left_all  = vecs[:-1]   # (n_pairs_p, n_total)
+        right_all = vecs[1:]    # (n_pairs_p, n_total)
+
+        # Dense columns → write to memmap (correct cols via Fix 4)
+        pair_dense = compute_pairwise_features(
+            left_all[:, dense_idx], right_all[:, dense_idx], mode
+        )
+        X_mm[row: row + n_pairs_p] = pair_dense
+
+        # Sparse columns → compute diff entirely in sparse arithmetic (Fix 5).
+        # Convert to CSR *before* subtraction so the operation stays sparse.
+        # Explicitly call .tocsr() on the result — SciPy may return another
+        # format (e.g. BSR) from sparse arithmetic depending on version.
+        # Then abs() the non-zero values in-place via .data; no dense array.
+        left_sp  = csr_matrix(left_all[:, sparse_idx].astype(np.float32, copy=False))
+        right_sp = csr_matrix(right_all[:, sparse_idx].astype(np.float32, copy=False))
+        pair_sparse = (left_sp - right_sp).tocsr()
+        pair_sparse.data = np.abs(pair_sparse.data)    # in-place, stays sparse
+        chunk_path = os.path.join(cache_dir, f"sparse_{prob_idx:06d}.npz")
+        save_npz(chunk_path, pair_sparse)
+
+        # Labels / groups
+        y_buf[row: row + n_pairs_p]      = np.asarray(changes, dtype=np.int8)
+        groups_buf[row: row + n_pairs_p] = prob_idx
+
+        problem_meta.append({
+            "problem_id": pid,
+            "difficulty": diff,
+            "start_row":  row,
+            "end_row":    row + n_pairs_p,
+        })
+
+        row += n_pairs_p
+
+        del vecs, left_all, right_all, pair_dense, left_sp, right_sp, pair_sparse
+        if prob_idx % 100 == 0:
+            gc.collect()
+
+        if (prob_idx + 1) % 50 == 0 or prob_idx + 1 == len(valid):
+            print(f"[pairwise] Processed {prob_idx + 1}/{len(valid)} problems")
+
+    n_pairs = row
+
+    # ── Flush dense memmap ─────────────────────────────────────────────────
+    X_mm.flush()
+    del X_mm
+    gc.collect()
+
+    # ── Save metadata (no merged sparse file — Fix 1) ─────────────────────
+    y      = y_buf[:n_pairs]
+    groups = groups_buf[:n_pairs]
+    np.savez(
+        meta_path,
+        n_pairs         = np.array(n_pairs,              dtype=np.int64),
+        n_dense         = np.array(n_dense,              dtype=np.int32),
+        n_sparse        = np.array(n_sparse,             dtype=np.int32),
+        pair_dense_cols = np.array(pdc,                  dtype=np.int32),
+        n_chunks        = np.array(len(problem_meta),    dtype=np.int32),
+        y               = y,
+        groups          = groups,
+    )
+    with open(os.path.join(cache_dir, "problem_meta.pkl"), "wb") as fh:
+        pickle.dump(problem_meta, fh, protocol=pickle.HIGHEST_PROTOCOL)
+
+    # ── Save sentence feature cache ────────────────────────────────────────
+    if use_sc:
+        _flush_sentence_cache(sent_cache_dir, new_sent)
+    del new_sent
+
+    elapsed = time.time() - t0
+    print(
+        f"[pairwise] Built in {elapsed:.1f}s — "
+        f"{n_pairs} pairs | dense {n_dense} feats → {pdc} cols | "
+        f"sparse {n_sparse} cols | {len(problem_meta)} chunk files"
+    )
+    class_0 = int((y == 0).sum())
+    class_1 = int((y == 1).sum())
+    print(f"[pairwise] Class distribution: {class_0} same / {class_1} switch")
+
+    return PairwiseDataset(
+        cache_dir       = cache_dir,
+        n_pairs         = n_pairs,
+        n_dense         = n_dense,
+        n_sparse        = n_sparse,
+        pair_dense_cols = pdc,
+        y               = y,
+        groups          = groups,
+        problem_meta    = problem_meta,
+    )
+
+
+def _load_dataset_from_cache(
+    cache_dir: str,
+    dense_path: str,
+    meta_path: str,
+) -> PairwiseDataset:
+    """Reconstruct a PairwiseDataset from existing cache files."""
+    meta_np         = np.load(meta_path, allow_pickle=False)
+    n_pairs         = int(meta_np["n_pairs"])
+    n_dense         = int(meta_np["n_dense"])
+    n_sparse        = int(meta_np["n_sparse"])
+    # Graceful degradation for caches written before Fix 4
+    pair_dense_cols = (
+        int(meta_np["pair_dense_cols"])
+        if "pair_dense_cols" in meta_np
+        else n_dense
+    )
+    y      = meta_np["y"]
+    groups = meta_np["groups"]
+
+    prob_meta_path = os.path.join(cache_dir, "problem_meta.pkl")
+    if os.path.exists(prob_meta_path):
+        with open(prob_meta_path, "rb") as fh:
+            problem_meta = pickle.load(fh)
+    else:
+        problem_meta = []
+
+    # Fix 9: validate chunk count early, before constructing PairwiseDataset.
+    # n_chunks was added in v6; fall back gracefully for older caches.
+    if "n_chunks" in meta_np and n_sparse > 0:
+        expected_chunks = int(meta_np["n_chunks"])
+        found_chunks    = len(sorted(
+            glob.glob(os.path.join(cache_dir, "sparse_[0-9]*.npz"))
+        ))
+        if found_chunks != expected_chunks:
+            raise RuntimeError(
+                f"[pairwise] Cache corruption detected in {cache_dir}: "
+                f"expected {expected_chunks} sparse chunk files, "
+                f"found {found_chunks}. "
+                "Call clear_pairwise_cache() and rebuild."
+            )
+        # Also verify problem_meta length agrees with n_chunks so that a
+        # truncated pickle can't silently misalign rows with chunk files.
+        if problem_meta and len(problem_meta) != expected_chunks:
+            raise RuntimeError(
+                f"[pairwise] Cache corruption detected in {cache_dir}: "
+                f"problem_meta has {len(problem_meta)} entries but "
+                f"n_chunks == {expected_chunks}. "
+                "Call clear_pairwise_cache() and rebuild."
+            )
+
+    print(
+        f"[pairwise] Cache loaded — {n_pairs} pairs | "
+        f"dense {n_dense} feats → {pair_dense_cols} cols | sparse {n_sparse}"
+    )
+    return PairwiseDataset(
+        cache_dir       = cache_dir,
+        n_pairs         = n_pairs,
+        n_dense         = n_dense,
+        n_sparse        = n_sparse,
+        pair_dense_cols = pair_dense_cols,
+        y               = y,
+        groups          = groups,
+        problem_meta    = problem_meta,
+    )
+
+
+# ============================================================================
+# Convenience builder — raw text pairs  (no caching, inference only)
+# ============================================================================
+
+def build_pairwise_from_texts(
+    texts1: list,
+    texts2: list,
+    labels: Optional[list] = None,
+    feature_pipeline: Optional[FeaturePipeline] = None,
+    mode: str = "diff",
+) -> tuple:
+    """
+    Build a pairwise matrix from two parallel text lists.
+    Intended for small inference batches — no caching.
+
+    Returns (X_dense, X_sparse, y, meta).
     """
     if feature_pipeline is None:
         feature_pipeline = FeaturePipeline()
-    
-    n_pairs = len(texts1)
-    
-    # Fit n-gram models if needed
-    if feature_pipeline.ngram_enabled:
-        all_sentences = texts1 + texts2
-        feature_pipeline.fit(all_sentences)
-    
-    # Extract features for all sentences in one batch each (vectorized)
-    features1 = feature_pipeline.extract_batch(texts1)
-    features2 = feature_pipeline.extract_batch(texts2)
-    
-    # Compute pairwise features (vectorized)
-    X = compute_pairwise_features(features1, features2, mode)
-    
-    # Create metadata
-    meta_list = []
-    for i in range(n_pairs):
-        meta_list.append({
-            "pair_idx": i,
-            "sentence1": texts1[i][:100],
-            "sentence2": texts2[i][:100],
-        })
-    
-    y = np.array(labels, dtype=np.int32) if labels is not None else None
-    
-    return X, y, meta_list
+    if feature_pipeline.ngram_enabled and not feature_pipeline._fitted:
+        feature_pipeline.fit(texts1 + texts2)
+
+    all_names   = feature_pipeline.feature_names
+    sparse_mask = _sparse_col_mask(all_names)
+    dense_idx   = np.where(~sparse_mask)[0]
+    sparse_idx  = np.where( sparse_mask)[0]
+
+    f1 = feature_pipeline.extract_batch(texts1).astype(np.float32, copy=False)
+    f2 = feature_pipeline.extract_batch(texts2).astype(np.float32, copy=False)
+
+    X_dense = compute_pairwise_features(f1[:, dense_idx], f2[:, dense_idx], mode)
+    # Fix 5: CSR arithmetic throughout, guaranteed CSR format (Fix 5).
+    f1_sp    = csr_matrix(f1[:, sparse_idx])
+    f2_sp    = csr_matrix(f2[:, sparse_idx])
+    X_sparse = (f1_sp - f2_sp).tocsr()
+    X_sparse.data = np.abs(X_sparse.data)   # in-place abs on non-zeros only
+    meta = [
+        {"pair_idx": i, "sentence1": texts1[i][:100], "sentence2": texts2[i][:100]}
+        for i in range(len(texts1))
+    ]
+    y = np.array(labels, dtype=np.int8) if labels is not None else None
+    return X_dense, X_sparse, y, meta
 
 
 # ============================================================================
-# Utility Functions
+# Feature name helpers
 # ============================================================================
 
-def get_pairwise_feature_names(feature_pipeline, mode="diff"):
+def get_pairwise_feature_names(
+    feature_pipeline: FeaturePipeline,
+    mode: str = "diff",
+) -> tuple:
     """
-    Get descriptive names for pairwise features based on mode.
-    
-    Args:
-        feature_pipeline: FeaturePipeline instance
-        mode: distance mode used
-        
-    Returns:
-        list of feature name strings
+    Return (dense_names, sparse_names) for the pairwise feature split.
+    Sparse names always reflect the "diff" operation.
     """
-    base_names = feature_pipeline.get_feature_names()
-    
+    all_names    = feature_pipeline.get_feature_names()
+    sparse_mask  = _sparse_col_mask(all_names)
+    dense_names  = [n for n, s in zip(all_names, sparse_mask) if not s]
+    sparse_names = [n for n, s in zip(all_names, sparse_mask) if s]
+
+    def _pref(names, tag):
+        return [f"{tag}_{n}" for n in names]
+
+    sparse_out = _pref(sparse_names, "diff")
+
     if mode == "diff":
-        return [f"diff_{name}" for name in base_names]
-    
-    elif mode == "concat":
-        return [f"left_{name}" for name in base_names] + [f"right_{name}" for name in base_names]
-    
-    elif mode == "cosine":
-        return ["cosine_distance"]
-    
-    elif mode == "euclidean":
-        return ["euclidean_distance"]
-    
-    elif mode == "combined":
-        diff_names = [f"diff_{name}" for name in base_names]
-        return diff_names + ["cosine_distance", "euclidean_distance"]
-    
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+        return _pref(dense_names, "diff"), sparse_out
+    if mode == "concat":
+        d = _pref(dense_names, "left") + _pref(dense_names, "right")
+        return d, sparse_out
+    if mode == "cosine":
+        return ["cosine_distance"], sparse_out
+    if mode == "euclidean":
+        return ["euclidean_distance"], sparse_out
+    if mode == "combined":
+        d = _pref(dense_names, "diff") + ["cosine_distance", "euclidean_distance"]
+        return d, sparse_out
+
+    raise ValueError(f"Unknown mode: {mode!r}")
 
 
-def clear_pairwise_cache(mode=None):
-    """
-    Clear pairwise feature cache.
-    
-    Args:
-        mode: specific mode to clear (None = all modes)
-    """
-    cache_dir = os.path.join(CACHE_DIR, "pairwise")
-    
-    if not os.path.exists(cache_dir):
+# ============================================================================
+# Cache management
+# ============================================================================
+
+def clear_pairwise_cache(mode: Optional[str] = None) -> None:
+    """Clear pairwise feature cache (all modes or a specific one)."""
+    cache_root = os.path.join(CACHE_DIR, "pairwise")
+    if not os.path.exists(cache_root):
         print("[cache] No pairwise cache found")
         return
-    
     if mode:
-        pattern = f"{mode}_*"
-        import glob
-        files = glob.glob(os.path.join(cache_dir, pattern))
-        for f in files:
-            os.remove(f)
-        print(f"[cache] Cleared {len(files)} cached files for mode '{mode}'")
+        pattern = os.path.join(cache_root, f"{mode}_*")
+        dirs    = glob.glob(pattern)
+        for d in dirs:
+            shutil.rmtree(d, ignore_errors=True)
+        print(f"[cache] Cleared {len(dirs)} cache dir(s) for mode '{mode}'")
     else:
-        import shutil
-        shutil.rmtree(cache_dir)
+        shutil.rmtree(cache_root, ignore_errors=True)
         print("[cache] Cleared all pairwise cache")

@@ -14,17 +14,10 @@ docker build -t author-switch-detector:latest .
 
 Using a Docker File :
 
-- Building :
-  bash` docker build -t author-switch-detector .`
+1) Building Files
+docker compose build
 
-- Run the Application :
-  bash```
-  docker run --rm \
-   -v "$(pwd)/dataset:/app/dataset" \
-  -v "$(pwd)/outputs:/app/outputs" \
-   author-switch-detector \
-   python -m src.main --mode train
+- Or : make build
 
-  ```
-
-  ```
+2) Start the application
+- docker compose up app
