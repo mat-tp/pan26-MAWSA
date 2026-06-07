@@ -219,7 +219,7 @@ def make_linear_svc(C=1.0):
 # MLP (Neural Network) - Corrected Architecture
 # ============================================================================
 
-def make_mlp(hidden_layer_sizes=(256, 128), alpha=1e-3, batch_size=128):
+def make_mlp(hidden_layer_sizes=(128, 64), alpha=1e-3, batch_size=256):
     """
     MLP with architecture tuned for ~12.5k stylometric features.
     
@@ -254,7 +254,7 @@ def make_mlp(hidden_layer_sizes=(256, 128), alpha=1e-3, batch_size=128):
             alpha=alpha,
             learning_rate="adaptive",
             learning_rate_init=1e-3,
-            max_iter=300,
+            max_iter=200,
             early_stopping=True,
             validation_fraction=0.1,
             n_iter_no_change=15,
@@ -284,13 +284,13 @@ def make_random_forest(n_estimators=500, max_depth=None, calibrate=True):
         calibrate: Calibrate probabilities with Platt scaling
     """
     rf = RandomForestClassifier(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        class_weight="balanced",
-        n_jobs=-1,
-        random_state=42,
-        verbose=0,
-    )
+    n_estimators=n_estimators,
+    max_depth=max_depth,
+    class_weight="balanced",
+    n_jobs=1,          # important
+    random_state=42,
+    verbose=0,
+)
     
     if calibrate:
         return OptionalScalerPipeline(
@@ -298,7 +298,7 @@ def make_random_forest(n_estimators=500, max_depth=None, calibrate=True):
             classifier=CalibratedClassifierCV(
                 rf,
                 method='sigmoid',
-                cv=5,
+                cv=3,
             )
         )
     else:
@@ -312,7 +312,7 @@ def make_random_forest(n_estimators=500, max_depth=None, calibrate=True):
 # Extra Trees (No Scaling)
 # ============================================================================
 
-def make_extra_trees(n_estimators=500, max_depth=None, calibrate=True):
+def make_extra_trees(n_estimators=300, max_depth=None, calibrate=True):
     """
     Extremely Randomized Trees.
     
@@ -330,7 +330,7 @@ def make_extra_trees(n_estimators=500, max_depth=None, calibrate=True):
         n_estimators=n_estimators,
         max_depth=max_depth,
         class_weight="balanced",
-        n_jobs=-1,
+        n_jobs=1,
         random_state=42,
         verbose=0,
     )
@@ -341,7 +341,7 @@ def make_extra_trees(n_estimators=500, max_depth=None, calibrate=True):
             classifier=CalibratedClassifierCV(
                 et,
                 method='sigmoid',
-                cv=5,
+                cv=3,
             )
         )
     else:
@@ -440,16 +440,18 @@ def make_lightgbm(n_estimators=500, num_leaves=63, learning_rate=0.05, use_gpu=T
     return OptionalScalerPipeline(
         scaler=make_scaler('tree'),  # No scaling for gradient boosting
         classifier=lgb.LGBMClassifier(
-            n_estimators=n_estimators,
-            num_leaves=num_leaves,
-            learning_rate=learning_rate,
+            n_estimators=500,
+            num_leaves=63,
+            learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
+            min_child_samples=20,
+            reg_alpha=0.1,
+            reg_lambda=0.1,
             class_weight="balanced",
             device=device,
             verbose=-1,
             random_state=42,
-            n_jobs=-1 if device == "cpu" else 1,
         )
     )
 

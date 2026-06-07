@@ -9,7 +9,7 @@ Usage:
     python main.py --mode ablation --data data/raw
 
     # Predict on a new dataset (TIRA-style)
-    python main.py --mode predict --data data/raw/test --model data/outputs/models/model.pkl
+    python main.py --mode predict --data data/raw/test --model data/outputs/models/best_model.pkl
 
     # Full pipeline: train then predict
     python main.py --mode full --data data/raw
@@ -74,6 +74,7 @@ from utils.config import (
     IMPORTANCE_PATH,
     MIN_SENTENCES_PER_PROBLEM,
     MODEL_PATH,
+    MODEL_SELECTION_PATH,
     MODELS_TO_COMPARE,
     PAIRWISE_MODE,
     PERM_IMP_REPEATS,
@@ -145,7 +146,7 @@ def load_train_data(data_root: str, subset: float = 1.0) -> list:
     Memory note: problems is a list of dicts; the raw text stays as Python
     strings until feature extraction.  Keep subset ≤ 0.25 on 8 GB machines.
     """
-    data     = load_all(data_root, splits=("train",))
+    data = load_all(data_root, splits=("train",))
     problems = flatten_problems(data)
 
     # Free the intermediate nested dict — we only need the flat list
@@ -154,7 +155,7 @@ def load_train_data(data_root: str, subset: float = 1.0) -> list:
 
     if subset < 1.0:
         random.seed(RANDOM_SEED)
-        k        = max(1, int(len(problems) * subset))
+        k = max(1, int(len(problems) * subset))
         problems = random.sample(problems, k)
         problems = list(problems)   # compact the list so un-sampled dicts are GC'd
         gc.collect()
@@ -169,36 +170,27 @@ def load_train_data(data_root: str, subset: float = 1.0) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Training
+# Training (with model selection)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_train(data_root: str, subset: float = 0.1):
     """
-    Train the primary model and save to disk.
-
-    Key memory strategy
-    -------------------
-    1. build_pairwise_dataset() returns a PairwiseDataset (memmap-backed).
-    2. ds.to_memory() loads dense X into RAM; X is downcast to float32.
-    3. `problems` is freed immediately after pairwise construction.
-    4. X/y are freed before the permutation importance sample is computed.
-    5. A training_log list records elapsed time and RAM at each step;
-       a PNG timeline is saved at the end.
+    Train all candidate models, select best by CV F1, save best_model.pkl.
 
     Returns:
-        (model, fp, X, y, problem_meta, groups)
-        X and y may be None if they were freed early — callers should check.
+        (best_model, fp, X, y, problem_meta, groups, best_model_name)
     """
     t_start = time.time()
     training_log: list = []
 
     def _checkpoint(step: str) -> None:
         training_log.append({
-            "step":      step,
+            "step": step,
             "elapsed_s": round(time.time() - t_start, 1),
-            "ram_mb":    _log_ram(step),
+            "ram_mb": _log_ram(step),
         })
 
+    # ---------- Data loading and feature extraction ----------
     problems = load_train_data(data_root, subset=subset)
     _checkpoint("load_train_data")
 
@@ -233,23 +225,75 @@ def run_train(data_root: str, subset: float = 0.1):
         f"{(y == 0).sum()} same / {(y == 1).sum()} switch"
     )
 
-    # Save class distribution plot
-    plot_class_distribution(y)
+    # Save class distribution plot (may fail if permissions, but we continue)
+    try:
+        plot_class_distribution(y)
+    except Exception as e:
+        print(f"[warning] Could not save class distribution plot: {e}")
 
-    # ── Cross-validate models one at a time ────────────────────────────────
+    # ---------- 1. Cross‑validation over all models ----------
     print(f"\n[main] Cross-validating {len(MODELS_TO_COMPARE)} model(s) ...")
     cv_results = compare_all_models(X, y, groups)
     save_json(cv_results, CV_RESULTS_PATH)
     _checkpoint("cross_validation")
 
-    # ── Train final model ──────────────────────────────────────────────────
-    print(f"\n[main] Training final model: {PRIMARY_MODEL}")
-    model = train_model(PRIMARY_MODEL, X, y)
-    save_model(model, MODEL_PATH)
-    _checkpoint("train_final_model")
+    # ---------- 2. Train every model on full dataset ----------
+    trained_models = {}
+    valid_models = {}   # models that succeeded in CV and have F1 score
 
-    # ── Permutation importance on a memory-budget sample ──────────────────
-    print("\n[main] Computing permutation importance ...")
+    print("\n[main] Training all candidate models on full dataset...")
+    for model_name in MODELS_TO_COMPARE:
+        try:
+            print(f"   → Training {model_name}")
+            model = train_model(model_name, X, y)
+            model_path = os.path.join(os.path.dirname(MODEL_PATH), f"{model_name}.pkl")
+            save_model(model, model_path)
+            trained_models[model_name] = model
+
+            # Keep only those that have CV results with an F1 score
+            if model_name in cv_results and "f1" in cv_results[model_name]:
+                valid_models[model_name] = cv_results[model_name]
+        except Exception as e:
+            print(f"[main] Failed to train/save {model_name}: {e}")
+    _checkpoint("train_all_models")
+
+    # ---------- 3. Select best model by CV F1 ----------
+    if len(valid_models) == 0:
+        print(f"[main] No valid model found – falling back to {PRIMARY_MODEL}")
+        best_model_name = PRIMARY_MODEL
+        best_f1 = 0.0
+        # Ensure fallback model is trained (if not already)
+        if best_model_name not in trained_models:
+            try:
+                trained_models[best_model_name] = train_model(best_model_name, X, y)
+                model_path = os.path.join(os.path.dirname(MODEL_PATH), f"{best_model_name}.pkl")
+                save_model(trained_models[best_model_name], model_path)
+            except Exception as e:
+                print(f"[main] CRITICAL: fallback model {best_model_name} also failed: {e}")
+                raise
+    else:
+        best_model_name = max(valid_models.items(), key=lambda x: x[1]["f1"])[0]
+        best_f1 = valid_models[best_model_name]["f1"]
+        print(f"\n[main] Best model: {best_model_name} (F1 = {best_f1:.4f})")
+
+    best_model = trained_models[best_model_name]
+
+    # ---------- 4. Save best model as best_model.pkl ----------
+    save_model(best_model, MODEL_PATH)   # MODEL_PATH points to best_model.pkl
+    _checkpoint("save_best_model")
+
+    # ---------- 5. Save model selection metadata ----------
+    selection_info = {
+        "best_model": best_model_name,
+        "best_f1": best_f1,
+        "cv_results": cv_results,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    save_json(selection_info, MODEL_SELECTION_PATH)
+    print(f"[main] Model selection saved to {MODEL_SELECTION_PATH}")
+
+    # ---------- 6. Permutation importance (on best model) ----------
+    print("\n[main] Computing permutation importance on best model...")
     MAX_IMP_ROWS = 5_000
     if len(X) > MAX_IMP_ROWS:
         rng = np.random.default_rng(RANDOM_SEED)
@@ -259,9 +303,7 @@ def run_train(data_root: str, subset: float = 0.1):
         X_imp, y_imp = X, y
 
     imp = permutation_importance(
-        model,
-        X_imp,
-        y_imp,
+        best_model, X_imp, y_imp,
         feature_names=fp.feature_names,
         n_repeats=PERM_IMP_REPEATS,
         top_k=PERM_IMP_TOP_K,
@@ -270,17 +312,14 @@ def run_train(data_root: str, subset: float = 0.1):
     _free(X_imp, y_imp)
     _checkpoint("permutation_importance")
 
-    if PRIMARY_MODEL == "logistic_regression":
-        coef = logistic_coefficients(model, feature_names=fp.feature_names)
+    if best_model_name == "logistic_regression":
+        coef = logistic_coefficients(best_model, feature_names=fp.feature_names)
         save_json(coef, IMPORTANCE_PATH.replace(".json", "_coeff.json"))
 
-    print(f"\n[main] Training complete. Model saved to {MODEL_PATH}")
-
-    # ── Save training timeline PNG ─────────────────────────────────────────
     _checkpoint("done")
     plot_training_log(training_log, path=PLOT_TRAINING_LOG_PATH)
 
-    return model, fp, X, y, problem_meta, groups
+    return best_model, fp, X, y, problem_meta, groups, best_model_name
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,10 +362,10 @@ def run_predict(data_root: str, model_path: str = None) -> list:
     Only 2 adjacent sentence vectors live in RAM at any moment.
     """
     model_path = model_path or MODEL_PATH
-    model      = load_model(model_path)
-    fp         = build_pipeline()
+    model = load_model(model_path)
+    fp = build_pipeline()
 
-    data     = load_all(data_root, splits=("validation",))
+    data = load_all(data_root, splits=("validation",))
     problems = flatten_problems(data)
     del data
     gc.collect()
@@ -344,7 +383,7 @@ def run_predict(data_root: str, model_path: str = None) -> list:
             continue
 
         # Extract per-sentence vectors; only 2 adjacent rows live in RAM at once
-        vecs    = fp.extract_batch(sentences)
+        vecs = fp.extract_batch(sentences)
         changes = []
         for i in range(len(sentences) - 1):
             pair_vec = np.abs(vecs[i] - vecs[i + 1]).reshape(1, -1).astype(np.float32)
@@ -365,21 +404,20 @@ def run_predict(data_root: str, model_path: str = None) -> list:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_full(data_root: str, subset: float = 0.1) -> None:
-    """Full pipeline: train → evaluate → predict."""
-    model, fp, X, y, problem_meta, groups = run_train(data_root, subset=subset)
+    """Full pipeline: train (with model selection) → evaluate → predict."""
+    best_model, fp, X, y, problem_meta, groups, best_model_name = run_train(data_root, subset=subset)
     _log_ram("run_full: after train")
 
     print("\n[main] Evaluating on training data (in-sample diagnostic) ...")
-    eval_res = evaluate_model(model, X, y, model_name=PRIMARY_MODEL)
+    eval_res = evaluate_model(best_model, X, y, model_name=best_model_name)
 
     print("\n[main] Per-difficulty breakdown:")
-    # Expand compact problem_meta into per-pair meta for difficulty breakdown
     pair_meta = expand_meta(problem_meta, y)
-    diff_res  = evaluate_by_difficulty(model, X, y, pair_meta)
+    diff_res = evaluate_by_difficulty(best_model, X, y, pair_meta)
     eval_res["by_difficulty"] = diff_res
 
     print("\n[main] Error analysis:")
-    errors = error_analysis(model, X, y, pair_meta)
+    errors = error_analysis(best_model, X, y, pair_meta)
 
     # Free feature matrix before prediction pass
     _free(X, y)
@@ -411,8 +449,8 @@ def main() -> None:
         default="full",
         help="Which pipeline to run",
     )
-    parser.add_argument("--data",  default=RAW_DIR,  help="Path to data root directory")
-    parser.add_argument("--model", default=None,      help="Path to saved model (predict mode only)")
+    parser.add_argument("--data", default=RAW_DIR, help="Path to data root directory")
+    parser.add_argument("--model", default=None, help="Path to saved model (predict mode only)")
     parser.add_argument(
         "--subset",
         type=float,

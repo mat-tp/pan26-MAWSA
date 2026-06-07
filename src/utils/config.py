@@ -43,6 +43,10 @@ PLOT_ABLATION_SGL_PATH = os.path.join(PLOTS_DIR, "ablation_single.png")
 PLOT_TRAINING_LOG_PATH = os.path.join(PLOTS_DIR, "training_log.png")
 PLOT_CLASS_DIST_PATH   = os.path.join(PLOTS_DIR, "class_distribution.png")
 
+
+MODEL_PATH = os.path.join(MODELS_DIR, "best_model.pkl")   # instead of model.pkl
+MODEL_SELECTION_PATH = os.path.join(OUTPUTS_DIR, "model_selection.json")
+
 # Ensure output directories exist when this module is first imported
 for _d in [OUTPUTS_DIR, CACHE_DIR, MODELS_DIR, PLOTS_DIR]:
     os.makedirs(_d, exist_ok=True)
@@ -96,12 +100,17 @@ PAIRWISE_MODE: str = "diff"
 # Model / training settings
 # ─────────────────────────────────────────────────────────────────────────────
 
-PRIMARY_MODEL: str = "lightgbm"   # best overall for stylometry
+AUTO_SELECT_BEST_MODEL = True
+PRIMARY_MODEL = "lightgbm"   # best overall for stylometry
 
 # Models run during compare_all_models() cross-validation sweep
 MODELS_TO_COMPARE = [
     "logistic_regression",
+    "linear_svc",
+    "mlp",
+    "random_forest",
     "extra_trees",
+    "xgboost",
     "lightgbm",
 ]
 
