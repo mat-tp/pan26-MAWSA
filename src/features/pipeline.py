@@ -1,24 +1,11 @@
 """
 Feature pipeline: assembles all feature groups into one sentence vector.
-Optimized with true batch extraction, memory efficiency, and caching support.
 
-Design:
-  - Primary API is extract_batch(sentences) for vectorized extraction
-  - extract_sentence(sentence) still available for single predictions
-  - Sentence feature caching with configurable cache directory
-  - GPU-ready feature matrices (float32, contiguous memory)
-
-Usage:
-    from features.pipeline import FeaturePipeline
-
-    fp = FeaturePipeline()                     # all groups enabled
-    fp.fit(all_sentences)                      # fit n-gram models
-    
-    # Batch extraction (primary API)
-    matrix = fp.extract_batch(sentences)       # shape: (n_sents, n_features)
-    
-    # Single sentence (convenience)
-    vec = fp.extract_sentence("This is a sentence.")
+Primary API:
+    fp = FeaturePipeline()           # all groups enabled
+    fp.fit(all_sentences)            # fit n-gram models (if ngram group active)
+    matrix = fp.extract_batch(sents) # shape (n_sents, n_features), float32
+    vec    = fp.extract_sentence(s)  # single-sentence convenience wrapper
 """
 
 import hashlib

@@ -2,29 +2,22 @@
 Main entry point for the Author Switch Detection system.
 
 Usage:
-    # Train and evaluate (cross-validation + held-out)
-    python main.py --mode train --data data/raw
-
-    # Run ablation study
+    python main.py --mode train    --data data/raw
     python main.py --mode ablation --data data/raw
+    python main.py --mode predict  --data data/raw/test --model data/outputs/models/best_model.pkl
+    python main.py --mode full     --data data/raw
 
-    # Predict on a new dataset (TIRA-style)
-    python main.py --mode predict --data data/raw/test --model data/outputs/models/best_model.pkl
-
-    # Full pipeline: train then predict
-    python main.py --mode full --data data/raw
-
-All outputs go to data/outputs/.
-All plots go to data/outputs/plots/.
+All outputs go to dataset/outputs/.
+All plots go to dataset/outputs/plots/.
 
 Memory design
 -------------
 - build_pairwise_dataset() returns a PairwiseDataset (lazy memmap wrapper).
-- ds.to_memory() materialises dense X into RAM; sparse stays on disk.
-- X is downcast float64→float32 immediately to halve footprint.
-- X is freed (del + gc.collect) before prediction pass.
-- Training log dicts accumulate timing + RAM at each checkpoint, then a
-  timeline PNG is saved at the end of run_train().
+- ds.to_memory() materialises the dense X matrix into RAM; sparse stays on disk.
+- X is downcast float64→float32 immediately to halve the footprint.
+- X is freed (del + gc.collect) before the prediction pass.
+- Training log dicts accumulate timing + RAM at each checkpoint; a timeline
+  PNG is saved at the end of run_train().
 """
 
 import argparse
@@ -39,21 +32,9 @@ import numpy as np
 # Add src/ to path so all package imports resolve from the correct root
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from data.loader import (
-    dataset_stats,
-    flatten_problems,
-    load_all,
-    load_split,
-)
-from evaluation.ablation import (
-    run_leave_one_out,
-    run_single_group,
-    save_ablation_csv,
-)
-from evaluation.importance import (
-    logistic_coefficients,
-    permutation_importance,
-)
+from data.loader import dataset_stats, flatten_problems, load_all, load_split
+from evaluation.ablation import run_leave_one_out, run_single_group, save_ablation_csv
+from evaluation.importance import logistic_coefficients, permutation_importance
 from evaluation.metrics import (
     compare_all_models,
     evaluate_by_difficulty,
@@ -86,21 +67,15 @@ from utils.config import (
     RANDOM_SEED,
     USE_PER_WORD_FW,
 )
-from utils.io import (
-    load_model,
-    save_csv,
-    save_json,
-    save_model,
-    save_predictions,
-)
+from utils.io import load_model, save_json, save_model, save_predictions
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Memory helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def _ram_mb() -> float:
-    """Return current process RSS in MB (best-effort)."""
+    """Return current process RSS in MB (best-effort; NaN if psutil absent)."""
     try:
         import psutil
         return psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2
@@ -117,80 +92,74 @@ def _log_ram(tag: str) -> float:
 
 
 def _free(*arrays) -> None:
-    """Delete references and run GC to release large arrays promptly."""
+    """Delete references and trigger GC to release large arrays promptly."""
     for a in arrays:
         del a
     gc.collect()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Pipeline factory
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def build_pipeline() -> FeaturePipeline:
-    """Create the feature pipeline from config settings."""
-    return FeaturePipeline(
-        groups=ACTIVE_FEATURE_GROUPS,
-        use_per_word_fw=USE_PER_WORD_FW,
-    )
+    """Instantiate the feature pipeline from config settings."""
+    return FeaturePipeline(groups=ACTIVE_FEATURE_GROUPS, use_per_word_fw=USE_PER_WORD_FW)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Data loading
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def load_train_data(data_root: str, subset: float = 1.0) -> list:
     """
     Load training problems with optional subsampling.
 
-    Memory note: problems is a list of dicts; the raw text stays as Python
-    strings until feature extraction.  Keep subset ≤ 0.25 on 8 GB machines.
+    Keep subset ≤ 0.25 on 8 GB machines; raw text stays as Python strings
+    until feature extraction, so most memory is in the feature matrix.
     """
-    data = load_all(data_root, splits=("train",))
+    data     = load_all(data_root, splits=("train",))
     problems = flatten_problems(data)
-
-    # Free the intermediate nested dict — we only need the flat list
     del data
     gc.collect()
 
     if subset < 1.0:
         random.seed(RANDOM_SEED)
-        k = max(1, int(len(problems) * subset))
+        k        = max(1, int(len(problems) * subset))
         problems = random.sample(problems, k)
-        problems = list(problems)   # compact the list so un-sampled dicts are GC'd
+        problems = list(problems)
         gc.collect()
 
     print(f"\n[main] Total training problems (subset={subset}): {len(problems)}")
-    stats = dataset_stats(problems)
-    for k, v in stats.items():
+    for k, v in dataset_stats(problems).items():
         print(f"  {k}: {v}")
 
     _log_ram("after load_train_data")
     return problems
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Training (with model selection)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
 
 def run_train(data_root: str, subset: float = 0.1):
     """
-    Train all candidate models, select best by CV F1, save best_model.pkl.
+    Train all candidate models, select best by CV F1, and save best_model.pkl.
 
     Returns:
         (best_model, fp, X, y, problem_meta, groups, best_model_name)
     """
-    t_start = time.time()
-    training_log: list = []
+    t_start      = time.time()
+    training_log = []
 
     def _checkpoint(step: str) -> None:
         training_log.append({
-            "step": step,
+            "step":      step,
             "elapsed_s": round(time.time() - t_start, 1),
-            "ram_mb": _log_ram(step),
+            "ram_mb":    _log_ram(step),
         })
 
-    # ---------- Data loading and feature extraction ----------
+    # ── Data loading and feature extraction ────────────────────────────────
     problems = load_train_data(data_root, subset=subset)
     _checkpoint("load_train_data")
 
@@ -199,106 +168,95 @@ def run_train(data_root: str, subset: float = 0.1):
 
     print(f"\n[main] Building pairwise dataset (mode={PAIRWISE_MODE}) ...")
     ds = build_pairwise_dataset(
-        problems,
-        fp,
+        problems, fp,
         min_sentences=MIN_SENTENCES_PER_PROBLEM,
         mode=PAIRWISE_MODE,
         use_cache=True,
     )
     _checkpoint("build_pairwise_dataset")
 
-    # Free raw problems — features are all we need now
     _free(problems)
     problems = None
 
-    # Materialise dense matrix into RAM
     X, y, problem_meta, groups = ds.to_memory()
 
-    # Downcast float64 → float32 to halve the feature-matrix footprint
     if X.dtype == np.float64:
         X = X.astype(np.float32)
         print("[main] Downcasted X to float32")
     _checkpoint("to_memory")
 
-    print(
-        f"[main] X shape: {X.shape}  y distribution: "
-        f"{(y == 0).sum()} same / {(y == 1).sum()} switch"
-    )
+    print(f"[main] X shape: {X.shape}  y: {(y == 0).sum()} same / {(y == 1).sum()} switch")
 
-    # Save class distribution plot (may fail if permissions, but we continue)
     try:
         plot_class_distribution(y)
     except Exception as e:
         print(f"[warning] Could not save class distribution plot: {e}")
 
-    # ---------- 1. Cross‑validation over all models ----------
+    # ── 1. Cross-validation over all models ────────────────────────────────
     print(f"\n[main] Cross-validating {len(MODELS_TO_COMPARE)} model(s) ...")
     cv_results = compare_all_models(X, y, groups)
     save_json(cv_results, CV_RESULTS_PATH)
     _checkpoint("cross_validation")
 
-    # ---------- 2. Train every model on full dataset ----------
+    # ── 2. Train every model on the full dataset ───────────────────────────
     trained_models = {}
-    valid_models = {}   # models that succeeded in CV and have F1 score
+    valid_models   = {}  # models that completed CV with an F1 score
 
     print("\n[main] Training all candidate models on full dataset...")
     for model_name in MODELS_TO_COMPARE:
         try:
             print(f"   → Training {model_name}")
-            model = train_model(model_name, X, y)
+            model      = train_model(model_name, X, y)
             model_path = os.path.join(os.path.dirname(MODEL_PATH), f"{model_name}.pkl")
             save_model(model, model_path)
             trained_models[model_name] = model
-
-            # Keep only those that have CV results with an F1 score
             if model_name in cv_results and "f1" in cv_results[model_name]:
                 valid_models[model_name] = cv_results[model_name]
         except Exception as e:
             print(f"[main] Failed to train/save {model_name}: {e}")
     _checkpoint("train_all_models")
 
-    # ---------- 3. Select best model by CV F1 ----------
-    if len(valid_models) == 0:
-        print(f"[main] No valid model found – falling back to {PRIMARY_MODEL}")
+    # ── 3. Select best model by CV F1 ─────────────────────────────────────
+    if not valid_models:
+        print(f"[main] No valid model found — falling back to {PRIMARY_MODEL}")
         best_model_name = PRIMARY_MODEL
-        best_f1 = 0.0
-        # Ensure fallback model is trained (if not already)
+        best_f1         = 0.0
         if best_model_name not in trained_models:
             try:
                 trained_models[best_model_name] = train_model(best_model_name, X, y)
-                model_path = os.path.join(os.path.dirname(MODEL_PATH), f"{best_model_name}.pkl")
-                save_model(trained_models[best_model_name], model_path)
+                save_model(
+                    trained_models[best_model_name],
+                    os.path.join(os.path.dirname(MODEL_PATH), f"{best_model_name}.pkl"),
+                )
             except Exception as e:
                 print(f"[main] CRITICAL: fallback model {best_model_name} also failed: {e}")
                 raise
     else:
-        best_model_name = max(valid_models.items(), key=lambda x: x[1]["f1"])[0]
-        best_f1 = valid_models[best_model_name]["f1"]
+        best_model_name = max(valid_models, key=lambda n: valid_models[n]["f1"])
+        best_f1         = valid_models[best_model_name]["f1"]
         print(f"\n[main] Best model: {best_model_name} (F1 = {best_f1:.4f})")
 
     best_model = trained_models[best_model_name]
 
-    # ---------- 4. Save best model as best_model.pkl ----------
-    save_model(best_model, MODEL_PATH)   # MODEL_PATH points to best_model.pkl
+    # ── 4. Save best model and selection metadata ──────────────────────────
+    save_model(best_model, MODEL_PATH)
     _checkpoint("save_best_model")
 
-    # ---------- 5. Save model selection metadata ----------
-    selection_info = {
+    save_json({
         "best_model": best_model_name,
-        "best_f1": best_f1,
+        "best_f1":    best_f1,
         "cv_results": cv_results,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-    }
-    save_json(selection_info, MODEL_SELECTION_PATH)
+        "timestamp":  time.strftime("%Y-%m-%d %H:%M:%S"),
+    }, MODEL_SELECTION_PATH)
     print(f"[main] Model selection saved to {MODEL_SELECTION_PATH}")
 
-    # ---------- 6. Permutation importance (on best model) ----------
+    # ── 5. Permutation importance ──────────────────────────────────────────
     print("\n[main] Computing permutation importance on best model...")
     MAX_IMP_ROWS = 5_000
     if len(X) > MAX_IMP_ROWS:
-        rng = np.random.default_rng(RANDOM_SEED)
-        idx = rng.choice(len(X), MAX_IMP_ROWS, replace=False)
-        X_imp, y_imp = X[idx], y[idx]
+        rng            = np.random.default_rng(RANDOM_SEED)
+        idx            = rng.choice(len(X), MAX_IMP_ROWS, replace=False)
+        X_imp, y_imp   = X[idx], y[idx]
     else:
         X_imp, y_imp = X, y
 
@@ -322,17 +280,16 @@ def run_train(data_root: str, subset: float = 0.1):
     return best_model, fp, X, y, problem_meta, groups, best_model_name
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Ablation
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def run_ablation(data_root: str) -> None:
     """
-    Run feature group ablation studies.
+    Run leave-one-out and single-group feature ablation studies.
 
-    Each ablation run re-extracts features for a different feature subset via
-    build_pairwise_dataset (which uses the disk cache, so the cost is mainly
-    the to_memory() call, not re-extraction from text).
+    Each run re-extracts features for a different feature subset via
+    build_pairwise_dataset (the disk cache makes this cheap — mostly I/O).
     """
     problems = load_train_data(data_root)
 
@@ -349,23 +306,22 @@ def run_ablation(data_root: str) -> None:
     print("\n[main] Ablation complete.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Prediction
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def run_predict(data_root: str, model_path: str = None) -> list:
     """
     Load a trained model and generate predictions for a dataset.
 
-    Memory note: predictions are accumulated as plain Python dicts (no large
-    arrays), so memory stays flat regardless of corpus size.
-    Only 2 adjacent sentence vectors live in RAM at any moment.
+    Only two adjacent sentence vectors live in RAM at any moment, so memory
+    stays flat regardless of corpus size.
     """
     model_path = model_path or MODEL_PATH
-    model = load_model(model_path)
-    fp = build_pipeline()
+    model      = load_model(model_path)
+    fp         = build_pipeline()
 
-    data = load_all(data_root, splits=("validation",))
+    data     = load_all(data_root, splits=("validation",))
     problems = flatten_problems(data)
     del data
     gc.collect()
@@ -382,15 +338,13 @@ def run_predict(data_root: str, model_path: str = None) -> list:
             predictions.append({"problem_id": problem["problem_id"], "changes": []})
             continue
 
-        # Extract per-sentence vectors; only 2 adjacent rows live in RAM at once
-        vecs = fp.extract_batch(sentences)
+        vecs    = fp.extract_batch(sentences)
         changes = []
         for i in range(len(sentences) - 1):
             pair_vec = np.abs(vecs[i] - vecs[i + 1]).reshape(1, -1).astype(np.float32)
             changes.append(int(model.predict(pair_vec)[0]))
 
         predictions.append({"problem_id": problem["problem_id"], "changes": changes})
-
         del vecs
         gc.collect()
 
@@ -399,9 +353,9 @@ def run_predict(data_root: str, model_path: str = None) -> list:
     return predictions
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Full pipeline
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def run_full(data_root: str, subset: float = 0.1) -> None:
     """Full pipeline: train (with model selection) → evaluate → predict."""
@@ -413,33 +367,29 @@ def run_full(data_root: str, subset: float = 0.1) -> None:
 
     print("\n[main] Per-difficulty breakdown:")
     pair_meta = expand_meta(problem_meta, y)
-    diff_res = evaluate_by_difficulty(best_model, X, y, pair_meta)
+    diff_res  = evaluate_by_difficulty(best_model, X, y, pair_meta)
     eval_res["by_difficulty"] = diff_res
 
     print("\n[main] Error analysis:")
     errors = error_analysis(best_model, X, y, pair_meta)
 
-    # Free feature matrix before prediction pass
     _free(X, y)
     X = y = None
 
-    save_json(
-        {
-            **eval_res,
-            "errors_summary": {
-                "false_positives": len(errors["false_positives"]),
-                "false_negatives": len(errors["false_negatives"]),
-            },
+    save_json({
+        **eval_res,
+        "errors_summary": {
+            "false_positives": len(errors["false_positives"]),
+            "false_negatives": len(errors["false_negatives"]),
         },
-        EVAL_RESULTS_PATH,
-    )
+    }, EVAL_RESULTS_PATH)
 
     run_predict(data_root)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # CLI
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Author Switch Detector")
@@ -449,8 +399,8 @@ def main() -> None:
         default="full",
         help="Which pipeline to run",
     )
-    parser.add_argument("--data", default=RAW_DIR, help="Path to data root directory")
-    parser.add_argument("--model", default=None, help="Path to saved model (predict mode only)")
+    parser.add_argument("--data",   default=RAW_DIR, help="Path to data root directory")
+    parser.add_argument("--model",  default=None,    help="Path to saved model (predict mode only)")
     parser.add_argument(
         "--subset",
         type=float,

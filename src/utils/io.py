@@ -1,7 +1,8 @@
 """
-I/O helpers: save/load models, JSON, CSVs, and prediction files.
+    I/O helpers: save/load models, JSON, CSVs, and prediction files.
 """
 
+import csv
 import json
 import os
 import pickle
@@ -9,9 +10,7 @@ import pickle
 import numpy as np
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Model persistence
-# ─────────────────────────────────────────────────────────────────────────────
 
 def save_model(model, path: str) -> None:
     """Pickle a fitted model to *path*, creating parent directories as needed."""
@@ -32,15 +31,13 @@ def load_model(path: str):
     return model
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# JSON
-# ─────────────────────────────────────────────────────────────────────────────
+# JSON File Operations
 
 def _json_default(obj):
     """Make numpy scalars and arrays JSON-serialisable."""
-    if isinstance(obj, (np.integer,)):
+    if isinstance(obj, np.integer):
         return int(obj)
-    if isinstance(obj, (np.floating,)):
+    if isinstance(obj, np.floating):
         return float(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
@@ -61,18 +58,15 @@ def load_json(path: str):
         return json.load(fh)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CSV
-# ─────────────────────────────────────────────────────────────────────────────
+
+# CSV File Operations
 
 def save_csv(rows, path: str) -> None:
     """
     Write a list of dicts to a CSV file.
 
-    The fieldnames are inferred from the keys of the first row.
+    Field names are inferred from the keys of the first row.
     """
-    import csv
-
     if not rows:
         print(f"[io] save_csv: no rows to write ({path})")
         return
@@ -86,9 +80,9 @@ def save_csv(rows, path: str) -> None:
     print(f"[io] CSV saved → {path}  ({len(rows)} rows)")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Predictions (JSONL — one JSON object per line, PAN-style)
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def save_predictions(predictions, path: str) -> None:
     """

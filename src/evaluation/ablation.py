@@ -1,12 +1,8 @@
 """
 Feature group ablation studies for author switch detection.
 
-Key changes vs original:
-  - save_ablation_csv() is unchanged.
-  - _plot_ablation_loo() saves a horizontal bar chart of F1 drops.
-  - _plot_ablation_single() saves a horizontal bar chart of standalone F1.
-  - Both run_leave_one_out() and run_single_group() call the plot helpers.
-  - use_cache parameter forwarded to build_pairwise_dataset.
+Provides leave-one-out and single-group ablation runs, each saving a
+horizontal bar-chart PNG and a CSV of F1 scores to PLOTS_DIR / OUTPUTS_DIR.
 """
 
 import csv

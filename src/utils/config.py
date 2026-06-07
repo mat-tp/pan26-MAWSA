@@ -7,31 +7,32 @@ GPU availability is detected at import time so callers don't need to check.
 
 import os
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Directory layout
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-# Root of the repository (two levels above this file: src/utils/ → src/ → root)
+# Root: src/utils/ → src/ → root
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC  = os.path.dirname(_HERE)
 _ROOT = os.path.dirname(_SRC)
 
-RAW_DIR      = os.path.join(_ROOT, "dataset", "mawsa26-pan-zenodo-DATA")
-OUTPUTS_DIR  = os.path.join(_ROOT, "dataset", "outputs")
-CACHE_DIR    = os.path.join(OUTPUTS_DIR, "cache")
-MODELS_DIR   = os.path.join(OUTPUTS_DIR, "models")
-PLOTS_DIR    = os.path.join(OUTPUTS_DIR, "plots")
+RAW_DIR     = os.path.join(_ROOT, "dataset", "mawsa26-pan-zenodo-DATA")
+OUTPUTS_DIR = os.path.join(_ROOT, "dataset", "outputs")
+CACHE_DIR   = os.path.join(OUTPUTS_DIR, "cache")
+MODELS_DIR  = os.path.join(OUTPUTS_DIR, "models")
+PLOTS_DIR   = os.path.join(OUTPUTS_DIR, "plots")
 
-# Concrete output paths
-MODEL_PATH          = os.path.join(MODELS_DIR,  "model.pkl")
-CV_RESULTS_PATH     = os.path.join(OUTPUTS_DIR, "cv_results.json")
-EVAL_RESULTS_PATH   = os.path.join(OUTPUTS_DIR, "eval_results.json")
-PREDICTIONS_PATH    = os.path.join(OUTPUTS_DIR, "predictions.jsonl")
-IMPORTANCE_PATH     = os.path.join(OUTPUTS_DIR, "feature_importance.json")
-ABLATION_LOO_PATH   = os.path.join(OUTPUTS_DIR, "ablation_loo.csv")
-ABLATION_SGL_PATH   = os.path.join(OUTPUTS_DIR, "ablation_single.csv")
+# Output file paths
+MODEL_PATH           = os.path.join(MODELS_DIR,  "best_model.pkl")
+MODEL_SELECTION_PATH = os.path.join(OUTPUTS_DIR, "model_selection.json")
+CV_RESULTS_PATH      = os.path.join(OUTPUTS_DIR, "cv_results.json")
+EVAL_RESULTS_PATH    = os.path.join(OUTPUTS_DIR, "eval_results.json")
+PREDICTIONS_PATH     = os.path.join(OUTPUTS_DIR, "predictions.jsonl")
+IMPORTANCE_PATH      = os.path.join(OUTPUTS_DIR, "feature_importance.json")
+ABLATION_LOO_PATH    = os.path.join(OUTPUTS_DIR, "ablation_loo.csv")
+ABLATION_SGL_PATH    = os.path.join(OUTPUTS_DIR, "ablation_single.csv")
 
-# Plot output paths (all saved as PNG, no plt.show() calls)
+# Plot output paths (PNG, no plt.show())
 PLOT_CV_PATH           = os.path.join(PLOTS_DIR, "cv_model_comparison.png")
 PLOT_CONFUSION_PATH    = os.path.join(PLOTS_DIR, "confusion_matrix.png")
 PLOT_ROC_PATH          = os.path.join(PLOTS_DIR, "roc_curve.png")
@@ -43,20 +44,16 @@ PLOT_ABLATION_SGL_PATH = os.path.join(PLOTS_DIR, "ablation_single.png")
 PLOT_TRAINING_LOG_PATH = os.path.join(PLOTS_DIR, "training_log.png")
 PLOT_CLASS_DIST_PATH   = os.path.join(PLOTS_DIR, "class_distribution.png")
 
-
-MODEL_PATH = os.path.join(MODELS_DIR, "best_model.pkl")   # instead of model.pkl
-MODEL_SELECTION_PATH = os.path.join(OUTPUTS_DIR, "model_selection.json")
-
-# Ensure output directories exist when this module is first imported
+# Create output directories on first import
 for _d in [OUTPUTS_DIR, CACHE_DIR, MODELS_DIR, PLOTS_DIR]:
     os.makedirs(_d, exist_ok=True)
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # GPU detection
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 def _detect_cuda() -> bool:
-    """Return True if a CUDA-capable GPU is visible to PyTorch or cupy."""
+    """Return True if a CUDA-capable GPU is visible to PyTorch or CuPy."""
     try:
         import torch
         if torch.cuda.is_available():
@@ -66,7 +63,7 @@ def _detect_cuda() -> bool:
         pass
     try:
         import cupy  # type: ignore
-        cupy.cuda.Device(0).compute_capability  # raises if no GPU
+        cupy.cuda.Device(0).compute_capability
         print("[config] CUDA GPU detected via CuPy")
         return True
     except Exception:
@@ -78,32 +75,31 @@ CUDA_AVAILABLE: bool = _detect_cuda()
 if not CUDA_AVAILABLE:
     print("[config] No CUDA GPU detected — running on CPU")
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Feature pipeline settings
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-# Which feature groups to include.  Matches ALL_GROUPS order in pipeline.py.
+# Active feature groups (matches ALL_GROUPS order in pipeline.py — do not reorder)
 ACTIVE_FEATURE_GROUPS = ["lexical", "punctuation", "function_words", "char_ngrams", "pos", "ngram"]
 
-# Set True to expand function-word features to per-word frequency vector
-# (adds ~180 features; useful but increases RAM use)
+# Expand function-word features to per-word frequency vector (~180 extra features, more RAM)
 USE_PER_WORD_FW: bool = False
 
-# Minimum sentences a problem must have to contribute training pairs
+# Minimum sentences per problem to generate training pairs
 MIN_SENTENCES_PER_PROBLEM: int = 3
 
 # How to combine left/right sentence vectors into a pair feature
 # Options: "diff" | "concat" | "cosine" | "euclidean" | "combined"
 PAIRWISE_MODE: str = "diff"
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Model / training settings
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
 AUTO_SELECT_BEST_MODEL = True
-PRIMARY_MODEL = "lightgbm"   # best overall for stylometry
+PRIMARY_MODEL = "lightgbm"  # best overall for stylometry
 
-# Models run during compare_all_models() cross-validation sweep
+# Models evaluated during compare_all_models() cross-validation sweep
 MODELS_TO_COMPARE = [
     "logistic_regression",
     "linear_svc",
@@ -116,28 +112,23 @@ MODELS_TO_COMPARE = [
 
 RANDOM_SEED: int = 42
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Feature importance settings
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-PERM_IMP_REPEATS: int = 5    # shuffles per feature (higher = more stable)
-PERM_IMP_TOP_K:   int = 30   # features to display
+PERM_IMP_REPEATS: int = 5   # shuffles per feature (higher = more stable estimates)
+PERM_IMP_TOP_K:   int = 30  # number of features to display
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Cache settings
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-CACHE_ENABLED: bool = True   # set False to always re-extract features
+CACHE_ENABLED: bool = True  # set False to always re-extract features
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # Plot settings
-# ─────────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 
-# DPI for saved plots (150 is a good balance of quality and file size)
 PLOT_DPI: int = 150
-
-# Style for matplotlib plots
 PLOT_STYLE: str = "seaborn-v0_8-whitegrid"
-
-# Whether to generate plots during training (set False for headless/CI runs)
-GENERATE_PLOTS: bool = True
+GENERATE_PLOTS: bool = True  # set False for headless/CI runs

@@ -1,13 +1,8 @@
 """
-Cross-validation and evaluation metrics for author switch detection.
+Cross-validation, evaluation metrics, and diagnostic plots for author switch detection.
 
-Key changes vs original:
-  - All plots are SAVED to PLOTS_DIR (never plt.show() — headless safe).
-  - evaluate_model() accepts model_name for labelled file naming.
-  - plot_training_log() records CV progress and saves a timeline PNG.
-  - plot_cv_comparison() bar chart saved after compare_all_models().
-  - plot_class_distribution() saved at dataset build time.
-  - Matplotlib backend forced to Agg at import to prevent GUI errors.
+All plots are saved to PLOTS_DIR (never plt.show() — safe for headless/Docker runs).
+Matplotlib backend is forced to Agg at import time.
 """
 
 import os

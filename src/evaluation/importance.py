@@ -1,11 +1,8 @@
 """
 Feature importance analysis for author switch detection.
 
-Key changes vs original:
-  - plot_importance() saves a PNG bar chart to PLOTS_DIR (no plt.show()).
-  - permutation_importance() now calls plot_importance() automatically.
-  - logistic_coefficients() now calls plot_coefficients() automatically.
-  - _get_classifier() helper is unchanged (handles OptionalScalerPipeline).
+Provides permutation importance, logistic regression coefficients, and
+optional SHAP values. All plots are saved to PLOTS_DIR automatically.
 """
 
 import os

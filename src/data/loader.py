@@ -18,26 +18,15 @@ PROBLEM_FILE = re.compile(r"^problem-(\d+)\.txt$")
 
 
 def load_sentences(text):
-    """ Splits a problem text into individual sentences.
-    """
-    sentences = []
-
-    lines = text.strip().split("\n")  # split the full text into lines
-
-    for line in lines:
-        clean_line = line.strip()  # remove leading/trailing whitespace
-        if clean_line:  # only add non-empty lines
-            sentences.append(clean_line)
-
-    return sentences
+    """Split a problem text into non-empty sentences (one per line)."""
+    return [line.strip() for line in text.strip().split("\n") if line.strip()]
 
 
 def load_problem(txt_path, truth_path, difficulty):
     """
     Load one problem: read sentences from txt_path and labels from truth_path.
 
-    Returns a dict with keys:
-        problem_id, difficulty, sentences, changes
+    Returns a dict with keys: problem_id, difficulty, sentences, changes.
     Returns None if the file is missing, malformed, or fails the sanity check.
     """
     if not os.path.exists(truth_path):
@@ -47,15 +36,13 @@ def load_problem(txt_path, truth_path, difficulty):
     try:
         with open(txt_path, encoding="utf-8") as f:
             sentences = load_sentences(f.read())
-
         with open(truth_path, encoding="utf-8") as f:
             changes = [int(c) for c in json.load(f)["changes"]]
-
     except (json.JSONDecodeError, KeyError, ValueError) as exc:
         print(f"[loader] Error reading {txt_path}: {exc} — skipping.")
         return None
 
-    # There must be exactly (n_sentences - 1) change labels.
+    # Sanity check: must have exactly (n_sentences - 1) change labels
     if len(sentences) - 1 != len(changes):
         print(
             f"[loader] Skipping {os.path.basename(txt_path)}: "
@@ -64,19 +51,17 @@ def load_problem(txt_path, truth_path, difficulty):
         return None
 
     problem_id = re.search(r"problem-(\d+)\.txt$", txt_path).group(1)
-
     return {
         "problem_id": problem_id,
         "difficulty": difficulty,
-        "sentences": sentences,
-        "changes": changes,
+        "sentences":  sentences,
+        "changes":    changes,
     }
 
 
 def load_split(path, difficulty):
     """Load all problems from a single directory (one difficulty × split)."""
     problems = []
-
     if not os.path.isdir(path):
         print(f"[loader] Directory not found: {path}")
         return problems
@@ -85,15 +70,12 @@ def load_split(path, difficulty):
         match = PROBLEM_FILE.match(fname)
         if not match:
             continue
-
-        pid = match.group(1)
-        txt_path = os.path.join(path, fname)
+        pid        = match.group(1)
+        txt_path   = os.path.join(path, fname)
         truth_path = os.path.join(path, f"truth-problem-{pid}.json")
-
-        problem = load_problem(txt_path, truth_path, difficulty)
+        problem    = load_problem(txt_path, truth_path, difficulty)
         if problem:
             problems.append(problem)
-
     return problems
 
 
@@ -106,19 +88,19 @@ def load_all(root, difficulties=("easy", "medium", "hard"), splits=("train",)):
     data = {}
     for diff in difficulties:
         for split in splits:
-            key = f"{diff}_{split}"
-            path = os.path.join(root, diff, split)
+            key       = f"{diff}_{split}"
+            path      = os.path.join(root, diff, split)
             data[key] = load_split(path, diff)
             print(f"[loader] {key}: {len(data[key])} problems loaded.")
     return data
 
 
 def flatten_problems(data_dict):
-    """Merge all problems from a load_all() result into a single list."""
-    all_problems = []
+    """Merge all problems from a load_all() result into a single flat list."""
+    result = []
     for problems in data_dict.values():
-        all_problems.extend(problems)
-    return all_problems
+        result.extend(problems)
+    return result
 
 
 def dataset_stats(problems):
@@ -126,19 +108,19 @@ def dataset_stats(problems):
     if not problems:
         return {}
 
-    n_probs = len(problems)
-    n_sents = sum(len(p["sentences"]) for p in problems)
-    n_pairs = sum(len(p["changes"]) for p in problems)
+    n_probs    = len(problems)
+    n_sents    = sum(len(p["sentences"]) for p in problems)
+    n_pairs    = sum(len(p["changes"]) for p in problems)
     n_switches = sum(sum(p["changes"]) for p in problems)
-    word_lens = [len(s.split()) for p in problems for s in p["sentences"]]
-    avg_words = round(sum(word_lens) / len(word_lens), 1) if word_lens else 0.0
+    word_lens  = [len(s.split()) for p in problems for s in p["sentences"]]
+    avg_words  = round(sum(word_lens) / len(word_lens), 1) if word_lens else 0.0
 
     return {
-        "n_problems": n_probs,
-        "n_sentences": n_sents,
-        "n_pairs": n_pairs,
-        "n_switches": n_switches,
-        "switch_rate_pct": round(n_switches / n_pairs * 100, 2) if n_pairs else 0.0,
+        "n_problems":           n_probs,
+        "n_sentences":          n_sents,
+        "n_pairs":              n_pairs,
+        "n_switches":           n_switches,
+        "switch_rate_pct":      round(n_switches / n_pairs * 100, 2) if n_pairs else 0.0,
         "avg_sents_per_problem": round(n_sents / n_probs, 1),
-        "avg_words_per_sent": avg_words,
+        "avg_words_per_sent":   avg_words,
     }

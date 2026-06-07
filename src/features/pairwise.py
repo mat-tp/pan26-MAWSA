@@ -1,74 +1,23 @@
 """
 Pairwise dataset construction for author switch detection.
 
-Memory design (v7)
-==================
-Fix 1 — _merge_sparse_chunks() was not constant-memory:
-    Removed entirely. Sparse chunk files (sparse_000000.npz …) are kept
-    as first-class citizens on disk. PairwiseDataset.iter_chunks() loads
-    each chunk file directly, so peak sparse RAM = 1 chunk at a time.
-    No sparse_merged.npz is ever written or read.
+Memory design
+-------------
+Dense features are written to a pre-allocated np.memmap (dense.dat).
+Sparse char-ngram features are stored as individual per-problem CSR files
+(sparse_NNNNNN.npz) — never merged — so peak RAM is bounded to one chunk.
+Metadata is stored in meta.npz + problem_meta.pkl.
 
-Fix 2 — X_sparse property could load several GB at once:
-    Property now raises RuntimeError with a clear message directing the
-    caller to iter_chunks() or to_memory(). A new X_sparse_unsafe()
-    method is provided for callers that genuinely need the full matrix
-    and have confirmed they have the RAM.
-
-Fix 3 — to_memory() reconstructed 121k per-pair dicts:
-    to_memory() now returns problem_meta (one record per problem) directly
-    instead of expanding it into per-pair dicts. The return signature
-    is updated; callers that need per-pair expansion can call
-    expand_meta(problem_meta, y) explicitly.
-
-Fix 4 — memmap allocated with wrong column count for non-diff modes:
-    pair_dense_cols is computed from mode BEFORE allocating the memmap,
-    so "combined" (+2 cols), "concat" (×2 cols), "cosine"/"euclidean"
-    (1 col) are all handled correctly.
-
-Fix 5 — sparse computation was still secretly dense:
-    left_sp / right_sp are now converted to CSR *before* subtraction so
-    that (left_sp - right_sp) is a sparse operation throughout.
-    The result is explicitly .tocsr() to guarantee format across SciPy
-    versions, then .data is abs()'d in-place — no dense intermediate.
-
-Fix 6 — cache hit failed when n_sparse == 0:
-    The `and chunk_files` guard in the cache-hit check caused a miss
-    whenever char-ngrams were disabled (no chunk files written).
-    Removed; PairwiseDataset handles an empty chunk list correctly.
-
-Fix 7 — iter_chunks assumed chunk files matched problem_meta order:
-    __init__ now validates len(_chunk_files) == len(problem_meta) when
-    n_sparse > 0, raising a clear RuntimeError on partial-write corruption.
-
-Fix 8 — iter_chunks yielded nothing when n_sparse == 0:
-    When _chunk_files is empty the chunk-file loop never ran, so callers
-    with n_sparse == 0 saw 0 batches despite n_pairs > 0. A dedicated
-    dense-only path now handles this case, yielding zero-column sparse
-    matrices so the caller API stays uniform. Dead `empty_sp` variable
-    from an earlier draft is also removed.
-
-Fix 9 — cache corruption detected early via n_chunks in meta.npz:
-    n_chunks is now stored in meta.npz. _load_dataset_from_cache()
-    compares it against both the actual chunk files found on disk AND
-    the length of the loaded problem_meta, raising immediately on either
-    mismatch before constructing PairwiseDataset.
-
-Fix 10 — X_sparse_unsafe loaded all chunks simultaneously:
-    Previous implementation did `[load_npz(p) for p in chunk_files]`
-    which held every chunk in RAM before vstacking, giving peak RAM ≈
-    2× the final matrix. Now vstacks one chunk at a time so peak RAM ≈
-    final matrix + one chunk.
-
-Cleanup — chunk_size removed from build_pairwise_dataset():
-    It was never used inside the builder; chunk_size belongs to
-    iter_chunks() only, where the caller supplies it.
-
-Architectural note — extract_split() is now fully wired in:
-    build_pairwise_dataset() calls feature_pipeline.extract_split() and
-    carries (dense_mat, sparse_mat) separately through the build loop.
-    The full-width dense hstack is gone; peak RAM is now bounded by one
-    problem's worth of features at a time.
+Key design constraints
+----------------------
+- X_sparse property raises RuntimeError to prevent silent OOM.
+  Use iter_chunks() for training loops or X_sparse_unsafe() when RAM allows.
+- to_memory() returns compact per-problem metadata; call expand_meta() only
+  when 121k per-pair dicts are genuinely needed.
+- pair_dense_cols is computed from mode before memmap allocation so that
+  "combined", "concat", "cosine", and "euclidean" modes are handled correctly.
+- Cache hit does NOT require chunk files when n_sparse == 0.
+- Chunk count is validated against problem_meta on load to detect corruption.
 
 On-disk layout  CACHE_DIR/pairwise/<mode>_<key>/
     dense.dat           np.memmap  (n_pairs, pair_dense_cols)  float32
@@ -158,7 +107,7 @@ def _sparse_col_mask(feature_names: list) -> np.ndarray:
 
 
 # ============================================================================
-# Dense column count for a given mode  (Fix 4)
+# Dense column count for a given mode
 # ============================================================================
 
 def _pair_dense_cols(n_dense_feats: int, mode: str) -> int:
@@ -234,7 +183,7 @@ def compute_pairwise_features(
 
 
 # ============================================================================
-# Per-pair meta expansion helper  (Fix 3 — separated from to_memory)
+# Per-pair meta expansion helper
 # ============================================================================
 
 def expand_meta(problem_meta: list, y: np.ndarray) -> list:
@@ -293,7 +242,7 @@ class PairwiseDataset:
         n_pairs: int,
         n_dense: int,          # raw feature count (input side)
         n_sparse: int,         # raw sparse feature count
-        pair_dense_cols: int,  # actual output columns in dense.dat (Fix 4)
+        pair_dense_cols: int,  # actual output columns in dense.dat
         y: np.ndarray,
         groups: np.ndarray,
         problem_meta: list,    # one dict per *problem* (not per pair)
@@ -309,14 +258,13 @@ class PairwiseDataset:
 
         self._dense_path = os.path.join(cache_dir, "dense.dat")
 
-        # Sorted list of per-problem sparse chunk files (Fix 1).
-        # When n_sparse == 0 this list is legitimately empty (Fix 6).
+        # Sorted list of per-problem sparse chunk files.
+        # When n_sparse == 0 this list is legitimately empty.
         self._chunk_files: list = sorted(
             glob.glob(os.path.join(cache_dir, "sparse_[0-9]*.npz"))
         )
 
-        # Fix 7: guard against partial-write corruption / missing chunks.
-        # Only enforced when sparse features exist; an empty list is valid
+            # Only enforced when sparse features exist; an empty list is valid
         # when n_sparse == 0.
         if n_sparse > 0 and len(self._chunk_files) != len(problem_meta):
             raise RuntimeError(
@@ -374,7 +322,7 @@ class PairwiseDataset:
         return sp_vstack(chunks, format="csr")
 
     # ------------------------------------------------------------------
-    # Chunk iterator — truly bounded memory  (Fix 1)
+    # Chunk iterator — truly bounded memory
     # ------------------------------------------------------------------
 
     def iter_chunks(
@@ -394,7 +342,6 @@ class PairwiseDataset:
         """
         X_d = self.X_dense
 
-        # Fix 8 — dense-only path: no chunk files when n_sparse == 0
         if self.n_sparse == 0:
             for start in range(0, self.n_pairs, chunk_size):
                 end = min(start + chunk_size, self.n_pairs)
@@ -520,26 +467,23 @@ def build_pairwise_dataset(
     Memory strategy
     ---------------
     Dense features:
-        Pre-allocated np.memmap with the correct shape for the chosen mode
-        (Fix 4: pair_dense_cols computed before allocation).
+        Pre-allocated np.memmap with the correct shape for the chosen mode.
     Sparse features (char-ngrams):
         Each problem's sparse block written directly as CSR to
-        sparse_NNNNNN.npz. No merge step — peak RAM = 1 chunk (Fix 1).
-        Sparse diff computed with CSR arithmetic — no dense intermediate
-        (Fix 5).
+        sparse_NNNNNN.npz. No merge step — peak RAM = 1 chunk.
+        Sparse diff computed with CSR arithmetic — no dense intermediate.
     Metadata:
         One compact record per *problem* (not per pair).
     X_sparse property:
-        Raises RuntimeError to prevent silent OOM (Fix 2).
+        Raises RuntimeError to prevent silent OOM.
     to_memory():
-        Returns problem_meta directly, no per-pair dict expansion (Fix 3).
+        Returns problem_meta directly, no per-pair dict expansion.
     Cache key:
         Includes SHA-256 of feature_names to catch silent feature changes.
     Cache hit with n_sparse == 0:
-        Chunk-file presence is not required for a cache hit (Fix 6).
+        Chunk-file presence is not required for a cache hit.
     Integrity check:
-        __init__ validates chunk count == problem count when n_sparse > 0
-        (Fix 7).
+        __init__ validates chunk count == problem count when n_sparse > 0.
     """
     t0 = time.time()
 
@@ -552,7 +496,6 @@ def build_pairwise_dataset(
     n_dense      = int((~sparse_mask).sum())
     n_sparse     = int(sparse_mask.sum())
 
-    # Fix 4: compute actual output column count BEFORE memmap allocation
     pdc = _pair_dense_cols(n_dense, mode)
 
     # ── Cache key ──────────────────────────────────────────────────────────
@@ -576,7 +519,6 @@ def build_pairwise_dataset(
     meta_path  = os.path.join(cache_dir, "meta.npz")
 
     # ── Try pairwise cache ─────────────────────────────────────────────────
-    # Fix 6: do NOT require chunk files to exist — when n_sparse == 0 no
     # chunk files are written and the cache is still valid.
     # PairwiseDataset.__init__ handles an empty _chunk_files list correctly.
     if use_cache and CACHE_ENABLED:
@@ -610,7 +552,7 @@ def build_pairwise_dataset(
     )
     new_sent: dict = {}
 
-    # ── Pre-allocate dense memmap with correct shape (Fix 4) ──────────────
+    # ── Pre-allocate dense memmap with correct shape ──────────────
     X_mm = np.memmap(
         dense_path, dtype=np.float32, mode="w+",
         shape=(n_pairs_est, pdc),
@@ -655,7 +597,7 @@ def build_pairwise_dataset(
         pair_dense = compute_pairwise_features(left_dense, right_dense, mode)
         X_mm[row: row + n_pairs_p] = pair_dense
 
-        # Sparse columns → compute diff entirely in sparse arithmetic (Fix 5).
+        # Sparse columns → compute diff entirely in sparse arithmetic.
         # Slices from a CSR matrix are already CSR; tocsr() guarantees format.
         # abs() the non-zero values in-place via .data; no dense intermediate.
         left_sp  = left_sp.tocsr().astype(np.float32, copy=False)
@@ -761,7 +703,6 @@ def _load_dataset_from_cache(
     else:
         problem_meta = []
 
-    # Fix 9: validate chunk count early, before constructing PairwiseDataset.
     # n_chunks was added in v6; fall back gracefully for older caches.
     if "n_chunks" in meta_np and n_sparse > 0:
         expected_chunks = int(meta_np["n_chunks"])
@@ -834,7 +775,6 @@ def build_pairwise_from_texts(
         f2_dense.astype(np.float32, copy=False),
         mode,
     )
-    # Fix 5: CSR arithmetic throughout, guaranteed CSR format.
     f1_sp    = f1_sparse.tocsr().astype(np.float32, copy=False)
     f2_sp    = f2_sparse.tocsr().astype(np.float32, copy=False)
     X_sparse = (f1_sp - f2_sp).tocsr()
