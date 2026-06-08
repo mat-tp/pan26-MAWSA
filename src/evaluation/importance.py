@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import sparse
 from sklearn.inspection import permutation_importance as _sklearn_perm
 
 
@@ -78,6 +79,10 @@ def permutation_importance(
     Returns:
         list of dicts [{name, importance, std}, ...]  sorted descending
     """
+    if sparse.issparse(X_val):
+        print("[importance] Converting sparse validation matrix to dense for permutation importance...")
+        X_val = X_val.toarray()
+
     result = _sklearn_perm(
         model, X_val, y_val,
         n_repeats=n_repeats,

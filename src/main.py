@@ -1,23 +1,6 @@
 """
 Main entry point for the Author Switch Detection system.
-
-Usage:
-    python main.py --mode train    --data data/raw
-    python main.py --mode ablation --data data/raw
-    python main.py --mode predict  --data data/raw/test --model data/outputs/models/best_model.pkl
-    python main.py --mode full     --data data/raw
-
-All outputs go to dataset/outputs/.
-All plots go to dataset/outputs/plots/.
-
-Memory design
--------------
-- build_pairwise_dataset() returns a PairwiseDataset (lazy memmap wrapper).
-- ds.to_memory() materialises the dense X matrix into RAM; sparse stays on disk.
-- X is downcast float64→float32 immediately to halve the footprint.
-- X is freed (del + gc.collect) before the prediction pass.
-- Training log dicts accumulate timing + RAM at each checkpoint; a timeline
-  PNG is saved at the end of run_train().
+Modified to save fitted pipeline for TIRA deployment.
 """
 
 import argparse
@@ -28,6 +11,7 @@ import sys
 import time
 
 import numpy as np
+from scipy.sparse import hstack as sparse_hstack
 
 # Add src/ to path so all package imports resolve from the correct root
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -45,7 +29,7 @@ from evaluation.metrics import (
 )
 from features.pipeline import FeaturePipeline
 from features.pairwise import build_pairwise_dataset, expand_meta
-from models.classifiers import train_model
+from models.classifiers import MODEL_REGISTRY, train_model
 from utils.config import (
     ABLATION_LOO_PATH,
     ABLATION_SGL_PATH,
@@ -60,6 +44,7 @@ from utils.config import (
     PAIRWISE_MODE,
     PERM_IMP_REPEATS,
     PERM_IMP_TOP_K,
+    ENABLE_PERM_IMPORTANCE,
     PLOT_TRAINING_LOG_PATH,
     PREDICTIONS_PATH,
     PRIMARY_MODEL,
@@ -67,7 +52,7 @@ from utils.config import (
     RANDOM_SEED,
     USE_PER_WORD_FW,
 )
-from utils.io import load_model, save_json, save_model, save_predictions
+from utils.io import load_model, save_json, save_model, save_predictions, save_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +130,7 @@ def load_train_data(data_root: str, subset: float = 1.0) -> list:
 def run_train(data_root: str, subset: float = 0.1):
     """
     Train all candidate models, select best by CV F1, and save best_model.pkl.
-
-    Returns:
-        (best_model, fp, X, y, problem_meta, groups, best_model_name)
+    Also saves the fitted feature pipeline for TIRA deployment.
     """
     t_start      = time.time()
     training_log = []
@@ -166,25 +149,51 @@ def run_train(data_root: str, subset: float = 0.1):
     fp = build_pipeline()
     fp.describe()
 
+    print("\n[main] Fitting pipeline on training sentences...")
+    all_sentences = []
+    for problem in problems:
+        all_sentences.extend(problem["sentences"])
+    
+    fp.fit(all_sentences)
+    print("[main] Pipeline fitted")
+
     print(f"\n[main] Building pairwise dataset (mode={PAIRWISE_MODE}) ...")
     ds = build_pairwise_dataset(
-        problems, fp,
+        problems, 
+        feature_pipeline=fp,  # Make sure this is the exact fitted object
         min_sentences=MIN_SENTENCES_PER_PROBLEM,
         mode=PAIRWISE_MODE,
         use_cache=True,
     )
     _checkpoint("build_pairwise_dataset")
 
+    # 🔥 SAVE THE FITTED PIPELINE (includes n-gram models, etc.)
+    pipeline_path = os.path.join(os.path.dirname(MODEL_PATH), "feature_pipeline.pkl")
+    save_pipeline(fp, pipeline_path)
+    _checkpoint("save_pipeline")
+
     _free(problems)
     problems = None
 
-    X, y, problem_meta, groups = ds.to_memory()
+    X_dense, y, problem_meta, groups = ds.to_memory()
+
+    if ds.n_sparse > 0:
+        print("[main] Loading sparse char-gram features into memory...")
+        X_sparse = ds.X_sparse_unsafe()
+        X = sparse_hstack([X_dense, X_sparse], format="csr")
+    else:
+        X = X_dense
 
     if X.dtype == np.float64:
         X = X.astype(np.float32)
         print("[main] Downcasted X to float32")
     _checkpoint("to_memory")
 
+    # 🔥 VERIFY FEATURE COUNT
+    print(f"[main] Feature matrix shape: {X.shape}")
+    print(f"[main] Pipeline feature count: {fp.n_features}")
+    assert X.shape[1] == fp.n_features, f"Feature mismatch: X has {X.shape[1]}, pipeline has {fp.n_features}"
+    
     print(f"[main] X shape: {X.shape}  y: {(y == 0).sum()} same / {(y == 1).sum()} switch")
 
     try:
@@ -204,6 +213,9 @@ def run_train(data_root: str, subset: float = 0.1):
 
     print("\n[main] Training all candidate models on full dataset...")
     for model_name in MODELS_TO_COMPARE:
+        if model_name not in MODEL_REGISTRY:
+            print(f"[main] Skipping unavailable model {model_name}")
+            continue
         try:
             print(f"   → Training {model_name}")
             model      = train_model(model_name, X, y)
@@ -218,9 +230,24 @@ def run_train(data_root: str, subset: float = 0.1):
 
     # ── 3. Select best model by CV F1 ─────────────────────────────────────
     if not valid_models:
-        print(f"[main] No valid model found — falling back to {PRIMARY_MODEL}")
-        best_model_name = PRIMARY_MODEL
-        best_f1         = 0.0
+        if PRIMARY_MODEL in MODEL_REGISTRY:
+            best_model_name = PRIMARY_MODEL
+            print(f"[main] No valid model found — falling back to {best_model_name}")
+        else:
+            available_models = [m for m in MODELS_TO_COMPARE if m in MODEL_REGISTRY]
+            if not available_models:
+                available_models = list(MODEL_REGISTRY)
+            if not available_models:
+                raise RuntimeError(
+                    "No available classifier implementations found. "
+                    "Install scikit-learn and/or the requested booster packages."
+                )
+            best_model_name = available_models[0]
+            print(
+                f"[main] No valid model found — primary model '{PRIMARY_MODEL}' is unavailable. "
+                f"Falling back to '{best_model_name}'."
+            )
+        best_f1 = 0.0
         if best_model_name not in trained_models:
             try:
                 trained_models[best_model_name] = train_model(best_model_name, X, y)
@@ -245,30 +272,35 @@ def run_train(data_root: str, subset: float = 0.1):
     save_json({
         "best_model": best_model_name,
         "best_f1":    best_f1,
+        "feature_count": int(X.shape[1]),
         "cv_results": cv_results,
         "timestamp":  time.strftime("%Y-%m-%d %H:%M:%S"),
     }, MODEL_SELECTION_PATH)
     print(f"[main] Model selection saved to {MODEL_SELECTION_PATH}")
 
-    # ── 5. Permutation importance ──────────────────────────────────────────
-    print("\n[main] Computing permutation importance on best model...")
-    MAX_IMP_ROWS = 5_000
-    if len(X) > MAX_IMP_ROWS:
-        rng            = np.random.default_rng(RANDOM_SEED)
-        idx            = rng.choice(len(X), MAX_IMP_ROWS, replace=False)
-        X_imp, y_imp   = X[idx], y[idx]
-    else:
-        X_imp, y_imp = X, y
+    if ENABLE_PERM_IMPORTANCE:
+        # ── 5. Permutation importance ──────────────────────────────────────────
+        print("\n[main] Computing permutation importance on best model...")
+        MAX_IMP_ROWS = 5_000
+        n_rows = X.shape[0]
+        if n_rows > MAX_IMP_ROWS:
+            rng            = np.random.default_rng(RANDOM_SEED)
+            idx            = rng.choice(n_rows, MAX_IMP_ROWS, replace=False)
+            X_imp, y_imp   = X[idx], y[idx]
+        else:
+            X_imp, y_imp = X, y
 
-    imp = permutation_importance(
-        best_model, X_imp, y_imp,
-        feature_names=fp.feature_names,
-        n_repeats=PERM_IMP_REPEATS,
-        top_k=PERM_IMP_TOP_K,
-    )
-    save_json(imp, IMPORTANCE_PATH)
-    _free(X_imp, y_imp)
-    _checkpoint("permutation_importance")
+        imp = permutation_importance(
+            best_model, X_imp, y_imp,
+            feature_names=fp.feature_names,
+            n_repeats=PERM_IMP_REPEATS,
+            top_k=PERM_IMP_TOP_K,
+        )
+        save_json(imp, IMPORTANCE_PATH)
+        _free(X_imp, y_imp)
+        _checkpoint("permutation_importance")
+    else:
+        print("[main] Permutation importance skipped (ENABLE_PERM_IMPORTANCE=False)")
 
     if best_model_name == "logistic_regression":
         coef = logistic_coefficients(best_model, feature_names=fp.feature_names)
@@ -285,12 +317,7 @@ def run_train(data_root: str, subset: float = 0.1):
 # ---------------------------------------------------------------------------
 
 def run_ablation(data_root: str) -> None:
-    """
-    Run leave-one-out and single-group feature ablation studies.
-
-    Each run re-extracts features for a different feature subset via
-    build_pairwise_dataset (the disk cache makes this cheap — mostly I/O).
-    """
+    """Run leave-one-out and single-group feature ablation studies."""
     problems = load_train_data(data_root)
 
     print("\n[main] Running leave-one-out ablation ...")
@@ -313,9 +340,6 @@ def run_ablation(data_root: str) -> None:
 def run_predict(data_root: str, model_path: str = None) -> list:
     """
     Load a trained model and generate predictions for a dataset.
-
-    Only two adjacent sentence vectors live in RAM at any moment, so memory
-    stays flat regardless of corpus size.
     """
     model_path = model_path or MODEL_PATH
     model      = load_model(model_path)

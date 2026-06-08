@@ -15,14 +15,7 @@ build/
 eggs/
 *.egg
 pip-wheel-metadata/
-
-# ============================================================================
-# Data & Datasets (excluded from git)
-# ============================================================================
-dataset/
-*.csv
-*.json.bak
-
+ 
 # ============================================================================
 # Cache & Temporary Files
 # ============================================================================
@@ -60,7 +53,6 @@ dataset/
 # ============================================================================
 # Note: Do NOT ignore Dockerfile or docker-compose.yml!
 # These are needed for the build process.
-.dockerignore
 Dockerfile.*.bak
 docker-compose.*.bak
 
@@ -113,10 +105,13 @@ wandb/
 # ============================================================================
 # Model Outputs (large files)
 # ============================================================================
-outputs/models/*
-!outputs/models/.gitkeep
-outputs/results/*
-!outputs/results/.gitkeep
+dataset/*
+!dataset/outputs/
+!dataset/outputs/models/
+!dataset/outputs/models/best_model.pkl
+
+# *.pkl
+!dataset/outputs/models/best_model.pkl
 
 # ============================================================================
 # Logs
@@ -140,6 +135,4 @@ __pycache__/
 *.pyc
 env/
 .venv/
-dataset/
-outputs/
 .git/

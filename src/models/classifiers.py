@@ -99,8 +99,8 @@ class OptionalScalerPipeline(Pipeline):
 
 
 def _linear_scaler():
-    """Full StandardScaler for linear and neural-network models."""
-    return StandardScaler()
+    """StandardScaler compatible with sparse matrices."""
+    return StandardScaler(with_mean=False)
 
 
 # ---------------------------------------------------------------------------

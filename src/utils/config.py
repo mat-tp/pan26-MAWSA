@@ -80,7 +80,16 @@ if not CUDA_AVAILABLE:
 # ---------------------------------------------------------------------------
 
 # Active feature groups (matches ALL_GROUPS order in pipeline.py — do not reorder)
-ACTIVE_FEATURE_GROUPS = ["lexical", "punctuation", "function_words", "char_ngrams", "pos", "ngram"]
+# "char_ngrams" & "ngram" are not used
+# ACTIVE_FEATURE_GROUPS = ["lexical", "punctuation", "function_words", "pos"]
+ACTIVE_FEATURE_GROUPS = [
+    "lexical",
+    "punctuation",
+    "function_words",
+    "char_ngrams",
+    "pos",
+    "ngram",
+]
 
 # Expand function-word features to per-word frequency vector (~180 extra features, more RAM)
 USE_PER_WORD_FW: bool = False
@@ -118,12 +127,13 @@ RANDOM_SEED: int = 42
 
 PERM_IMP_REPEATS: int = 5   # shuffles per feature (higher = more stable estimates)
 PERM_IMP_TOP_K:   int = 30  # number of features to display
+ENABLE_PERM_IMPORTANCE: bool = False  # set False to skip permutation importance entirely
 
 # ---------------------------------------------------------------------------
 # Cache settings
 # ---------------------------------------------------------------------------
 
-CACHE_ENABLED: bool = True  # set False to always re-extract features
+CACHE_ENABLED: bool = False  # set False to always re-extract features
 
 # ---------------------------------------------------------------------------
 # Plot settings

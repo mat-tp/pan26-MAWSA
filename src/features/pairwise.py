@@ -256,6 +256,8 @@ class PairwiseDataset:
         self.groups          = groups
         self.problem_meta    = problem_meta
 
+        self._fitted = False
+
         self._dense_path = os.path.join(cache_dir, "dense.dat")
 
         # Sorted list of per-problem sparse chunk files.
@@ -540,9 +542,12 @@ def build_pairwise_dataset(
     print(f"[pairwise] Dense memmap ≈ {dense_mb:.1f} MB on disk")
 
     # ── Fit n-gram models ──────────────────────────────────────────────────
-    if feature_pipeline.ngram_enabled and not feature_pipeline._fitted:
+    # Skip refitting - pipeline should already be fitted by caller
+    # Skip refitting - pipeline should already be fitted by caller
+    if feature_pipeline.ngram_enabled and not feature_pipeline.is_fitted:
+        # If not fitted, fit it now (but this shouldn't happen)
         all_sents = [s for p in valid for s in p["sentences"]]
-        print(f"[pairwise] Fitting n-gram LM on {len(all_sents)} sentences …")
+        print(f"[pairwise] WARNING: Pipeline not fitted, fitting now...")
         feature_pipeline.fit(all_sents)
 
     # ── Sentence-feature cache ─────────────────────────────────────────────
