@@ -109,15 +109,14 @@ dataset/*
 !dataset/outputs/
 !dataset/outputs/models/
 !dataset/outputs/models/best_model.pkl
-
-# *.pkl
-!dataset/outputs/models/best_model.pkl
+!dataset/outputs/models/feature_pipeline.pkl
 
 # ============================================================================
 # Logs
 # ============================================================================
 *.log
 logs/
+author-switch-detector.tar.gz
 
 # ============================================================================
 # Documentation Build

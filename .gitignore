@@ -14,12 +14,16 @@ venv/
 Thumbs.db
 
 # Dataset
-dataset/
-dataset.zip
+dataset/mawsa26-pan-zenodo-DATA
+!dataset/outputs/
+!dataset/outputs/models/
+!dataset/outputs/models/best_model.pkl
+!dataset/outputs/models/feature_pipeline.pkl
 *.zip
 
 # VS Code
 .vscode/
 
 # Logs
-*.log
+*.logauthor-switch-detector.tar.gz
+author-switch-detector.tar.gz

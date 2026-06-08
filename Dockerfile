@@ -2,65 +2,51 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app:/app/src
 
 WORKDIR /app
 
-# Install system dependencies
+# System dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies with PINNED VERSIONS
+# Python dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
+# NLTK resources required by POS features
+RUN python - <<EOF
+import nltk
+nltk.download("punkt")
+nltk.download("stopwords")
+nltk.download("averaged_perceptron_tagger")
+nltk.download("averaged_perceptron_tagger_eng")
+nltk.download("universal_tagset")
+EOF
+
+# Source code
 COPY src/ ./src/
 
-# Copy trained artifacts (must exist from training)
-COPY dataset/outputs/models/best_model.pkl /app/data/outputs/models/best_model.pkl
-COPY dataset/outputs/models/feature_pipeline.pkl /app/data/outputs/models/feature_pipeline.pkl
+# Run script
+COPY run.sh /app/run.sh
+RUN chmod +x /app/run.sh
 
-# Create output directory (TIRA will mount this)
+# Model directory
+RUN mkdir -p /app/dataset/outputs/models
+
+# Trained artifacts
+COPY dataset/outputs/models/best_model.pkl \
+    /app/dataset/outputs/models/best_model.pkl
+
+COPY dataset/outputs/models/feature_pipeline.pkl \
+    /app/dataset/outputs/models/feature_pipeline.pkl
+
+# TIRA output directory
 RUN mkdir -p /output
 
-# Entrypoint for TIRA
-ENTRYPOINT ["python", "/app/src/tira_predict.py"]
+ENTRYPOINT ["/app/run.sh"]
 CMD ["-h"]
-
-# FROM python:3.11-slim
-
-# ENV PYTHONDONTWRITEBYTECODE=1 \
-#     PYTHONUNBUFFERED=1 \
-#     PYTHONPATH=/app/src
-
-# WORKDIR /app
-
-# # System dependencies (keep minimal but ML-safe)
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-#     build-essential \
-#     gcc \
-#     git \
-#     curl \
-#     && rm -rf /var/lib/apt/lists/*
-
-# # Install Python dependencies first (cache layer)
-# COPY requirements.txt .
-# RUN pip install --upgrade pip && \
-#     pip install -r requirements.txt
-
-# # Copy project
-# COPY . .
-
-# # Ensure NLTK data is available
-# RUN python -c "import nltk; \
-#     nltk.download('punkt'); \
-#     nltk.download('stopwords'); \
-#     nltk.download('averaged_perceptron_tagger')"
-
-# # Default working command
-# CMD ["python", "-m", "src.main", "--help"]

@@ -32,22 +32,44 @@ def load_sentences_from_text(text: str) -> list:
 def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipeline_path: str = None):
     """Predict using fitted pipeline."""
     
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    default_model_dir = os.path.join(repo_root, "dataset", "outputs", "models")
+        # ------------------------------------------------------------------
+    # Resolve model / pipeline paths
+    # ------------------------------------------------------------------
 
-    # Set default paths
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    default_model_dir = os.path.join(
+        repo_root,
+        "dataset",
+        "outputs",
+        "models"
+    )
+
     if model_path is None:
-        model_path = os.path.join(default_model_dir, "best_model.pkl")
+        model_path = os.path.join(
+            default_model_dir,
+            "best_model.pkl"
+        )
+
     if pipeline_path is None:
-        pipeline_path = os.path.join(default_model_dir, "feature_pipeline.pkl")
-    
-    # Check files exist
+        pipeline_path = os.path.join(
+            default_model_dir,
+            "feature_pipeline.pkl"
+        )
+
+    print(f"[TIRA] Loading model:\n       {model_path}")
+    print(f"[TIRA] Loading pipeline:\n       {pipeline_path}")
+
     if not os.path.exists(model_path):
-        print(f"[TIRA] Error: Model not found: {model_path}")
-        sys.exit(1)
+        raise FileNotFoundError(
+            f"[TIRA] Error: Model not found: {model_path}"
+        )
+
     if not os.path.exists(pipeline_path):
-        print(f"[TIRA] Error: Pipeline not found: {pipeline_path}")
-        sys.exit(1)
+        raise FileNotFoundError(
+            f"[TIRA] Error: Pipeline not found: {pipeline_path}"
+        )
+
     
     print(f"[TIRA] Loading model from: {model_path}")
     model = load_model(model_path)
