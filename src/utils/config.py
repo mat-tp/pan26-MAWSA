@@ -80,16 +80,21 @@ if not CUDA_AVAILABLE:
 # ---------------------------------------------------------------------------
 
 # Active feature groups (matches ALL_GROUPS order in pipeline.py — do not reorder)
-# "char_ngrams" & "ngram" are not used
-# ACTIVE_FEATURE_GROUPS = ["lexical", "punctuation", "function_words", "pos"]
+# "char_ngrams" & "ngram" are not used by default
 ACTIVE_FEATURE_GROUPS = [
     "lexical",
     "punctuation",
     "function_words",
+    "readability",
     "char_ngrams",
     "pos",
     "ngram",
 ]
+
+# Optional embedding feature group. Set to True only if sentence-transformers is installed
+# and you want to compare embedding-based representations.
+USE_EMBEDDINGS: bool = False
+EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 # Expand function-word features to per-word frequency vector (~180 extra features, more RAM)
 USE_PER_WORD_FW: bool = False
@@ -128,6 +133,13 @@ RANDOM_SEED: int = 42
 PERM_IMP_REPEATS: int = 5   # shuffles per feature (higher = more stable estimates)
 PERM_IMP_TOP_K:   int = 30  # number of features to display
 ENABLE_PERM_IMPORTANCE: bool = False  # set False to skip permutation importance entirely
+
+# Hyperparameter search settings
+ENABLE_HYPERPARAM_SEARCH: bool = False
+HYPERPARAM_SEARCH_METHOD: str = "randomized"  # 'grid' or 'randomized'
+HYPERPARAM_SEARCH_N_ITER: int = 25
+HYPERPARAM_SEARCH_CV: int = 5
+HYPERPARAM_SEARCH_SCORING: str = "f1"
 
 # ---------------------------------------------------------------------------
 # Cache settings

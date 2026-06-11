@@ -23,6 +23,8 @@ dataset/outputs/cache
 
 # Ignoring the feature pipeline model
 dataset/outputs/models/feature_pipeline.pkl
+dataset/outputs/models
+*.pkl
 
 *.zip
 

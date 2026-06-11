@@ -9,8 +9,8 @@ import numpy as np
 from scipy.sparse import hstack as sp_hstack
 from sklearn.feature_extraction.text import HashingVectorizer
 
-_HASH_BITS  = 12
-_N_FEATURES = 1 << _HASH_BITS  # 4096
+_HASH_BITS  = 8  # 2^8 = 256 features per n-gram (optimized for memory)
+_N_FEATURES = 1 << _HASH_BITS  # 256 features per n-gram
 
 
 def _make_vectorizer(n):
@@ -25,20 +25,18 @@ def _make_vectorizer(n):
     )
 
 
-_VECTORIZERS = {2: _make_vectorizer(2), 3: _make_vectorizer(3), 4: _make_vectorizer(4)}
+_VECTORIZERS = {2: _make_vectorizer(2), 3: _make_vectorizer(3)}
 
 NAMES_BIGRAMS   = [f"cng2_{i}" for i in range(_N_FEATURES)]
 NAMES_TRIGRAMS  = [f"cng3_{i}" for i in range(_N_FEATURES)]
-NAMES_FOURGRAMS = [f"cng4_{i}" for i in range(_N_FEATURES)]
-NAMES = NAMES_BIGRAMS + NAMES_TRIGRAMS + NAMES_FOURGRAMS
+NAMES = NAMES_BIGRAMS + NAMES_TRIGRAMS
 
 
 def extract(sentence):
-    """Concatenate bigram + trigram + 4-gram vectors for a single sentence."""
+    """Concatenate bigram + trigram vectors for a single sentence."""
     sparse_vec = sp_hstack([
         _VECTORIZERS[2].transform([sentence]),
         _VECTORIZERS[3].transform([sentence]),
-        _VECTORIZERS[4].transform([sentence]),
     ])
     return sparse_vec.toarray().ravel().astype(np.float32)
 
@@ -47,7 +45,7 @@ def extract_batch(sentences):
     """
     Vectorised batch extraction.
 
-    Returns a sparse CSR matrix of shape (n_sentences, 3 * _N_FEATURES)
+    Returns a sparse CSR matrix of shape (n_sentences, 2 * _N_FEATURES)
     using a single hstack per n-gram order — much faster than calling
     extract() in a loop.
     """

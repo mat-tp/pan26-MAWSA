@@ -9,9 +9,11 @@ import os
 import random
 import sys
 import time
+import warnings
 
 import numpy as np
 from scipy.sparse import hstack as sparse_hstack
+from sklearn.feature_selection import VarianceThreshold
 
 # Add src/ to path so all package imports resolve from the correct root
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -45,14 +47,20 @@ from utils.config import (
     PERM_IMP_REPEATS,
     PERM_IMP_TOP_K,
     ENABLE_PERM_IMPORTANCE,
+    ENABLE_HYPERPARAM_SEARCH,
+    HYPERPARAM_SEARCH_CV,
+    HYPERPARAM_SEARCH_N_ITER,
+    HYPERPARAM_SEARCH_METHOD,
+    HYPERPARAM_SEARCH_SCORING,
     PLOT_TRAINING_LOG_PATH,
     PREDICTIONS_PATH,
     PRIMARY_MODEL,
     RAW_DIR,
     RANDOM_SEED,
+    USE_EMBEDDINGS,
     USE_PER_WORD_FW,
 )
-from utils.io import load_model, save_json, save_model, save_predictions, save_pipeline
+from utils.io import load_model, load_pipeline, save_json, save_model, save_predictions, save_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +97,10 @@ def _free(*arrays) -> None:
 
 def build_pipeline() -> FeaturePipeline:
     """Instantiate the feature pipeline from config settings."""
-    return FeaturePipeline(groups=ACTIVE_FEATURE_GROUPS, use_per_word_fw=USE_PER_WORD_FW)
+    groups = list(ACTIVE_FEATURE_GROUPS)
+    if USE_EMBEDDINGS:
+        groups.append("embeddings")
+    return FeaturePipeline(groups=groups, use_per_word_fw=USE_PER_WORD_FW)
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +138,15 @@ def load_train_data(data_root: str, subset: float = 1.0) -> list:
 # Training
 # ---------------------------------------------------------------------------
 
-def run_train(data_root: str, subset: float = 0.1):
+def run_train(
+    data_root: str,
+    subset: float = 0.1,
+    use_hyperparam_search: bool = ENABLE_HYPERPARAM_SEARCH,
+    search_method: str = HYPERPARAM_SEARCH_METHOD,
+    search_cv: int = HYPERPARAM_SEARCH_CV,
+    search_n_iter: int = HYPERPARAM_SEARCH_N_ITER,
+    search_scoring: str = HYPERPARAM_SEARCH_SCORING,
+):
     """
     Train all candidate models, select best by CV F1, and save best_model.pkl.
     Also saves the fitted feature pipeline for TIRA deployment.
@@ -159,15 +178,16 @@ def run_train(data_root: str, subset: float = 0.1):
 
     print(f"\n[main] Building pairwise dataset (mode={PAIRWISE_MODE}) ...")
     ds = build_pairwise_dataset(
-        problems, 
+        problems,
         feature_pipeline=fp,  # Make sure this is the exact fitted object
         min_sentences=MIN_SENTENCES_PER_PROBLEM,
         mode=PAIRWISE_MODE,
-        use_cache=True,
+        use_cache=False,
+        cache_sentence_features=False,
     )
     _checkpoint("build_pairwise_dataset")
 
-    # 🔥 SAVE THE FITTED PIPELINE (includes n-gram models, etc.)
+    #  SAVE THE FITTED PIPELINE (includes n-gram models, etc.)
     pipeline_path = os.path.join(os.path.dirname(MODEL_PATH), "feature_pipeline.pkl")
     save_pipeline(fp, pipeline_path)
     _checkpoint("save_pipeline")
@@ -189,10 +209,21 @@ def run_train(data_root: str, subset: float = 0.1):
         print("[main] Downcasted X to float32")
     _checkpoint("to_memory")
 
-    # 🔥 VERIFY FEATURE COUNT
+    #  VERIFY FEATURE COUNT
     print(f"[main] Feature matrix shape: {X.shape}")
     print(f"[main] Pipeline feature count: {fp.n_features}")
     assert X.shape[1] == fp.n_features, f"Feature mismatch: X has {X.shape[1]}, pipeline has {fp.n_features}"
+    
+    # ── Feature variance thresholding (removes ~25% low-variance features) ───
+    print("\n[main] Applying variance threshold to remove uninformative features...")
+    var_selector = VarianceThreshold(threshold=0.01)
+    X_filtered = var_selector.fit_transform(X)
+    print(f"[main] Variance filtering: {X.shape[1]} → {X_filtered.shape[1]} features ({100*(1-X_filtered.shape[1]/X.shape[1]):.1f}% removed)")
+    X = X_filtered
+    selector_path = os.path.join(os.path.dirname(MODEL_PATH), "variance_selector.pkl")
+    save_model(var_selector, selector_path)
+    _checkpoint("save_selector")
+    _checkpoint("variance_threshold")
     
     print(f"[main] X shape: {X.shape}  y: {(y == 0).sum()} same / {(y == 1).sum()} switch")
 
@@ -207,18 +238,46 @@ def run_train(data_root: str, subset: float = 0.1):
     save_json(cv_results, CV_RESULTS_PATH)
     _checkpoint("cross_validation")
 
-    # ── 2. Train every model on the full dataset ───────────────────────────
+    # ── 2. Train only top-3 models by CV F1 (memory optimization) ─────────
     trained_models = {}
     valid_models   = {}  # models that completed CV with an F1 score
 
-    print("\n[main] Training all candidate models on full dataset...")
-    for model_name in MODELS_TO_COMPARE:
+    # Select top-3 models to retrain (instead of retraining all 7)
+    if cv_results:
+        # Filter models that have F1 scores and sort by F1
+        scored_models = [
+            (name, cv_results[name]) for name in cv_results 
+            if "f1" in cv_results[name]
+        ]
+        if scored_models:
+            scored_models.sort(key=lambda x: x[1]["f1"], reverse=True)
+            top_k_models = [m[0] for m in scored_models[:3]]  # Top 3 by F1
+            print(f"\n[main] Top-3 models by CV F1: {top_k_models}")
+            models_to_train = [m for m in MODELS_TO_COMPARE if m in top_k_models]
+        else:
+            models_to_train = MODELS_TO_COMPARE
+    else:
+        models_to_train = MODELS_TO_COMPARE
+
+    if use_hyperparam_search:
+        print(f"\n[main] Hyperparameter search enabled: {search_method} ({search_cv}-fold, {search_n_iter} iter)")
+    print(f"\n[main] Training {len(models_to_train)} top model(s) on full dataset (memory-optimized)...")
+    for model_name in models_to_train:
         if model_name not in MODEL_REGISTRY:
             print(f"[main] Skipping unavailable model {model_name}")
             continue
         try:
             print(f"   → Training {model_name}")
-            model      = train_model(model_name, X, y)
+            model      = train_model(
+                model_name,
+                X,
+                y,
+                use_hyperparam_search=use_hyperparam_search,
+                search_method=search_method,
+                search_cv=search_cv,
+                search_n_iter=search_n_iter,
+                search_scoring=search_scoring,
+            )
             model_path = os.path.join(os.path.dirname(MODEL_PATH), f"{model_name}.pkl")
             save_model(model, model_path)
             trained_models[model_name] = model
@@ -226,7 +285,7 @@ def run_train(data_root: str, subset: float = 0.1):
                 valid_models[model_name] = cv_results[model_name]
         except Exception as e:
             print(f"[main] Failed to train/save {model_name}: {e}")
-    _checkpoint("train_all_models")
+    _checkpoint("train_top_models")
 
     # ── 3. Select best model by CV F1 ─────────────────────────────────────
     if not valid_models:
@@ -250,7 +309,16 @@ def run_train(data_root: str, subset: float = 0.1):
         best_f1 = 0.0
         if best_model_name not in trained_models:
             try:
-                trained_models[best_model_name] = train_model(best_model_name, X, y)
+                trained_models[best_model_name] = train_model(
+                    best_model_name,
+                    X,
+                    y,
+                    use_hyperparam_search=use_hyperparam_search,
+                    search_method=search_method,
+                    search_cv=search_cv,
+                    search_n_iter=search_n_iter,
+                    search_scoring=search_scoring,
+                )
                 save_model(
                     trained_models[best_model_name],
                     os.path.join(os.path.dirname(MODEL_PATH), f"{best_model_name}.pkl"),
@@ -337,13 +405,40 @@ def run_ablation(data_root: str) -> None:
 # Prediction
 # ---------------------------------------------------------------------------
 
+def get_pipeline_path(model_path: str) -> str:
+    """Return the expected path for the saved feature pipeline alongside a model."""
+    return os.path.join(os.path.dirname(model_path), "feature_pipeline.pkl")
+
+
+def get_selector_path(model_path: str) -> str:
+    """Return the expected path for the saved variance selector alongside a model."""
+    return os.path.join(os.path.dirname(model_path), "variance_selector.pkl")
+
+
 def run_predict(data_root: str, model_path: str = None) -> list:
     """
     Load a trained model and generate predictions for a dataset.
     """
     model_path = model_path or MODEL_PATH
     model      = load_model(model_path)
-    fp         = build_pipeline()
+
+    pipeline_path = get_pipeline_path(model_path)
+    if os.path.exists(pipeline_path):
+        fp = load_pipeline(pipeline_path)
+    else:
+        raise FileNotFoundError(
+            f"Fitted feature pipeline not found at {pipeline_path}. "
+            "Train a model first so the n-gram extractor is fitted and saved."
+        )
+
+    selector_path = get_selector_path(model_path)
+    if os.path.exists(selector_path):
+        selector = load_model(selector_path)
+    else:
+        raise FileNotFoundError(
+            f"Variance selector not found at {selector_path}. "
+            "Train a model first so that feature selection can be applied at prediction time."
+        )
 
     data     = load_all(data_root, splits=("validation",))
     problems = flatten_problems(data)
@@ -356,6 +451,22 @@ def run_predict(data_root: str, model_path: str = None) -> list:
     print(f"[main] Predicting on {len(problems)} problems ...")
     predictions = []
 
+    if hasattr(model, "n_features_in_"):
+        expected = int(model.n_features_in_)
+        actual = vecs = None
+        # Use a small dummy batch to verify selector output shape.
+        if problems:
+            sample_sentences = problems[0]["sentences"][:2]
+            if sample_sentences:
+                sample_feats = fp.extract_batch(sample_sentences)
+                sample_feats = selector.transform(sample_feats)
+                actual = sample_feats.shape[1]
+        if actual is not None and expected != actual:
+            raise ValueError(
+                f"Feature mismatch before prediction: model expects {expected} features, "
+                f"but pipeline+selector produces {actual}."
+            )
+
     for problem in problems:
         sentences = problem["sentences"]
         if len(sentences) < 2:
@@ -363,10 +474,17 @@ def run_predict(data_root: str, model_path: str = None) -> list:
             continue
 
         vecs    = fp.extract_batch(sentences)
+        vecs    = selector.transform(vecs)
         changes = []
         for i in range(len(sentences) - 1):
             pair_vec = np.abs(vecs[i] - vecs[i + 1]).reshape(1, -1).astype(np.float32)
-            changes.append(int(model.predict(pair_vec)[0]))
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="X does not have valid feature names",
+                    category=UserWarning,
+                )
+                changes.append(int(model.predict(pair_vec)[0]))
 
         predictions.append({"problem_id": problem["problem_id"], "changes": changes})
         del vecs
@@ -381,9 +499,25 @@ def run_predict(data_root: str, model_path: str = None) -> list:
 # Full pipeline
 # ---------------------------------------------------------------------------
 
-def run_full(data_root: str, subset: float = 0.1) -> None:
+def run_full(
+    data_root: str,
+    subset: float = 0.001,
+    use_hyperparam_search: bool = ENABLE_HYPERPARAM_SEARCH,
+    search_method: str = HYPERPARAM_SEARCH_METHOD,
+    search_cv: int = HYPERPARAM_SEARCH_CV,
+    search_n_iter: int = HYPERPARAM_SEARCH_N_ITER,
+    search_scoring: str = HYPERPARAM_SEARCH_SCORING,
+) -> None:
     """Full pipeline: train (with model selection) → evaluate → predict."""
-    best_model, fp, X, y, problem_meta, groups, best_model_name = run_train(data_root, subset=subset)
+    best_model, fp, X, y, problem_meta, groups, best_model_name = run_train(
+        data_root,
+        subset=subset,
+        use_hyperparam_search=use_hyperparam_search,
+        search_method=search_method,
+        search_cv=search_cv,
+        search_n_iter=search_n_iter,
+        search_scoring=search_scoring,
+    )
     _log_ram("run_full: after train")
 
     print("\n[main] Evaluating on training data (in-sample diagnostic) ...")
@@ -428,19 +562,55 @@ def main() -> None:
     parser.add_argument(
         "--subset",
         type=float,
-        default=0.05,
-        help="Fraction of training data to use (0.35 recommended on 8 GB machines)",
+        default=0.005,
+        help="Fraction of training data to use (0.005 recommended on 8 GB machines)",
+    )
+    parser.add_argument(
+        "--hyperparam-search",
+        action="store_true",
+        help="Enable hyperparameter search during model training.",
+    )
+    parser.add_argument(
+        "--search-method",
+        choices=["grid", "randomized"],
+        default=None,
+        help="Hyperparameter search method to use when enabled.",
+    )
+    parser.add_argument(
+        "--search-iter",
+        type=int,
+        default=None,
+        help="Number of iterations for randomized search.",
     )
     args = parser.parse_args()
 
+    search_method = args.search_method if args.search_method is not None else HYPERPARAM_SEARCH_METHOD
+    search_n_iter = args.search_iter if args.search_iter is not None else HYPERPARAM_SEARCH_N_ITER
+
     if args.mode == "train":
-        run_train(args.data, subset=args.subset)
+        run_train(
+            args.data,
+            subset=args.subset,
+            use_hyperparam_search=args.hyperparam_search,
+            search_method=search_method,
+            search_cv=HYPERPARAM_SEARCH_CV,
+            search_n_iter=search_n_iter,
+            search_scoring=HYPERPARAM_SEARCH_SCORING,
+        )
     elif args.mode == "ablation":
         run_ablation(args.data)
     elif args.mode == "predict":
         run_predict(args.data, model_path=args.model)
     elif args.mode == "full":
-        run_full(args.data, subset=args.subset)
+        run_full(
+            args.data,
+            subset=args.subset,
+            use_hyperparam_search=args.hyperparam_search,
+            search_method=search_method,
+            search_cv=HYPERPARAM_SEARCH_CV,
+            search_n_iter=search_n_iter,
+            search_scoring=HYPERPARAM_SEARCH_SCORING,
+        )
 
 
 if __name__ == "__main__":

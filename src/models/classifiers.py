@@ -19,6 +19,7 @@ import numpy as np
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -163,7 +164,7 @@ def make_mlp(hidden_layer_sizes=(128, 64), alpha=1e-3, batch_size=256):
             n_iter_no_change=15,
             batch_size=batch_size,
             random_state=42,
-            verbose=False,
+            verbose=True,
         ),
     )
 
@@ -319,6 +320,38 @@ MODEL_USES_SCALING = {
     "lightgbm":            False,
 }
 
+HYPERPARAMETER_GRIDS = {
+    "logistic_regression": {
+        "clf__C": [0.01, 0.1, 1.0, 10.0],
+    },
+    "linear_svc": {
+        "clf__C": [0.01, 0.1, 1.0],
+    },
+    "mlp": {
+        "clf__hidden_layer_sizes": [(128, 64), (256, 128), (128, 128)],
+        "clf__alpha": [1e-4, 1e-3, 1e-2],
+        "clf__learning_rate_init": [1e-4, 1e-3],
+    },
+    "random_forest": {
+        "clf__base_estimator__n_estimators": [200, 500],
+        "clf__base_estimator__max_depth": [None, 10, 20],
+    },
+    "extra_trees": {
+        "clf__base_estimator__n_estimators": [200, 500],
+        "clf__base_estimator__max_depth": [None, 10, 20],
+    },
+    "xgboost": {
+        "clf__n_estimators": [200, 500],
+        "clf__max_depth": [4, 6, 8],
+        "clf__learning_rate": [0.01, 0.05, 0.1],
+    },
+    "lightgbm": {
+        "clf__n_estimators": [200, 500],
+        "clf__num_leaves": [31, 63, 127],
+        "clf__learning_rate": [0.01, 0.05, 0.1],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -331,15 +364,112 @@ def build_model(name, **kwargs):
     return MODEL_REGISTRY[name](**kwargs)
 
 
-def train_model(name, X_train, y_train, **kwargs):
+def _get_hyperparameter_space(name):
+    if name not in HYPERPARAMETER_GRIDS:
+        raise KeyError(
+            f"No hyperparameter search space defined for model '{name}'. "
+            "Add one to HYPERPARAMETER_GRIDS in models/classifiers.py."
+        )
+    return HYPERPARAMETER_GRIDS[name]
+
+
+def search_model(
+    name,
+    X_train,
+    y_train,
+    method: str = "randomized",
+    cv: int = 5,
+    n_iter: int = 25,
+    scoring: str = "f1",
+    n_jobs: int = -1,
+    random_state: int = 42,
+    verbose: bool = False,
+    model_kwargs: dict = None,
+):
+    """Search for the best hyperparameters and return the fitted estimator."""
+    model_kwargs = model_kwargs or {}
+    param_space = _get_hyperparameter_space(name)
+    estimator = build_model(name, **model_kwargs)
+
+    if method == "grid":
+        search = GridSearchCV(
+            estimator,
+            param_space,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=n_jobs,
+            refit=True,
+            verbose=2 if verbose else 0,
+        )
+    elif method == "randomized":
+        search = RandomizedSearchCV(
+            estimator,
+            param_space,
+            n_iter=n_iter,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=n_jobs,
+            random_state=random_state,
+            refit=True,
+            verbose=1 if verbose else 0,
+        )
+    else:
+        raise ValueError("method must be 'grid' or 'randomized'")
+
+    print(f"[classifiers] Running {method} hyperparameter search for {name}...")
+    search.fit(X_train, y_train)
+    print(f"[classifiers] Best {name} params: {search.best_params_}")
+    return search.best_estimator_, search.best_params_, search
+
+
+def train_model(
+    name,
+    X_train,
+    y_train,
+    use_hyperparam_search: bool = False,
+    search_method: str = "grid",
+    search_cv: int = 5,
+    search_n_iter: int = 25,
+    search_scoring: str = "f1",
+    search_verbose: bool = False,
+    **kwargs,
+):
     """Instantiate, fit, and return the named model."""
-    model = build_model(name, **kwargs)
-    model.fit(X_train, y_train)
+    if use_hyperparam_search:
+        model, best_params, _ = search_model(
+            name,
+            X_train,
+            y_train,
+            method=search_method,
+            cv=search_cv,
+            n_iter=search_n_iter,
+            scoring=search_scoring,
+            verbose=search_verbose,
+            model_kwargs=kwargs,
+        )
+    else:
+        model = build_model(name, **kwargs)
+        model.fit(X_train, y_train)
+
     uses_scaling = MODEL_USES_SCALING.get(name, True)
     print(
         f"[classifiers] Trained '{name}' on {len(y_train)} samples "
         f"({X_train.shape[1]} features, scaling={'yes' if uses_scaling else 'no'})"
     )
+
+    if name == "mlp":
+        clf = model
+        if hasattr(model, "named_steps") and "clf" in model.named_steps:
+            clf = model.named_steps["clf"]
+        if hasattr(clf, "loss_curve_"):
+            loss_curve = clf.loss_curve_
+            print(
+                f"[classifiers] MLP iterations: {len(loss_curve)}; "
+                f"final loss = {loss_curve[-1]:.5f}"
+            )
+        if hasattr(clf, "n_iter_"):
+            print(f"[classifiers] MLP n_iter_ = {clf.n_iter_}")
+
     return model
 
 

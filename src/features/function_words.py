@@ -42,6 +42,22 @@ PRONOUNS = frozenset({
     "they", "them", "their", "theirs", "themselves",
 })
 
+AUXILIARIES = frozenset({
+    "am", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did",
+    "will", "would", "shall", "should", "may", "might", "must", "can", "could",
+})
+
+DETERMINERS = frozenset({
+    "a", "an", "the", "this", "that", "these", "those", "my", "your",
+    "his", "her", "its", "our", "their",
+})
+
+CONJUNCTIONS = frozenset({
+    "and", "or", "but", "because", "so", "although", "however", "while", "if", "when",
+    "though", "since", "until", "whereas", "nor", "yet",
+})
+
 INDIVIDUAL_WORDS = sorted(FUNCTION_WORDS)
 
 NAMES = [
@@ -49,6 +65,9 @@ NAMES = [
     "fw_ratio",
     "fw_unique_ratio",
     "pronoun_ratio",
+    "auxiliary_ratio",
+    "determiner_ratio",
+    "conjunction_ratio",
 ]
 
 
@@ -59,12 +78,18 @@ def extract(sentence):
 
     fw_tokens = [t for t in tokens if t in FUNCTION_WORDS]
     fw_count  = len(fw_tokens)
+    aux_count = sum(1 for t in tokens if t in AUXILIARIES)
+    det_count = sum(1 for t in tokens if t in DETERMINERS)
+    conj_count = sum(1 for t in tokens if t in CONJUNCTIONS)
 
     return np.array([
         fw_count,
         fw_count / n_tokens,
         len(set(fw_tokens)) / max(1, fw_count),
         sum(1 for t in tokens if t in PRONOUNS) / n_tokens,
+        aux_count / n_tokens,
+        det_count / n_tokens,
+        conj_count / n_tokens,
     ], dtype=np.float32)
 
 
@@ -110,11 +135,17 @@ def extract_batch(sentences, per_word=False):
 
         fw_tokens = [t for t in tokens if t in FUNCTION_WORDS]
         fw_count  = len(fw_tokens)
+        aux_count = sum(1 for t in tokens if t in AUXILIARIES)
+        det_count = sum(1 for t in tokens if t in DETERMINERS)
+        conj_count = sum(1 for t in tokens if t in CONJUNCTIONS)
 
         out[i, 0] = fw_count
         out[i, 1] = fw_count / n_tokens
         out[i, 2] = len(set(fw_tokens)) / max(1, fw_count)
         out[i, 3] = sum(1 for t in tokens if t in PRONOUNS) / n_tokens
+        out[i, 4] = aux_count / n_tokens
+        out[i, 5] = det_count / n_tokens
+        out[i, 6] = conj_count / n_tokens
 
         if per_word:
             for j, w in enumerate(INDIVIDUAL_WORDS):

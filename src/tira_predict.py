@@ -6,22 +6,20 @@ PAN 2026 Multi-Author Writing Style Analysis - TIRA submission script.
 import argparse
 import glob
 import json
-import gc
 import os
 import re
 import sys
-
 import warnings
-import numpy as np
 
-try:
-    import pandas as pd
-except ImportError:
-    pd = None
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.utils.io import load_model, load_pipeline
+
+
+def get_selector_path(model_path: str) -> str:
+    return os.path.join(os.path.dirname(model_path), "variance_selector.pkl")
 
 
 def load_sentences_from_text(text: str) -> list:
@@ -32,9 +30,8 @@ def load_sentences_from_text(text: str) -> list:
 def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipeline_path: str = None):
     """Predict using fitted pipeline."""
     
-        # ------------------------------------------------------------------
+    
     # Resolve model / pipeline paths
-    # ------------------------------------------------------------------
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -76,16 +73,29 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
     
     print(f"[TIRA] Loading fitted pipeline from: {pipeline_path}")
     pipeline = load_pipeline(pipeline_path)
-    
-    # Verify feature count
-    if hasattr(model, 'n_features_in_'):
-        print(f"[TIRA] Model expects {model.n_features_in_} features")
-        print(f"[TIRA] Pipeline provides {pipeline.n_features} features")
-        
-        assert pipeline.n_features == model.n_features_in_, \
-            f"Feature mismatch! Pipeline has {pipeline.n_features}, " \
-            f"model expects {model.n_features_in_}"
-    
+
+    selector_path = get_selector_path(model_path)
+    if not os.path.exists(selector_path):
+        raise FileNotFoundError(
+            f"[TIRA] Variance selector not found: {selector_path}. "
+            "Train a model first so feature selection is saved alongside the model."
+        )
+    print(f"[TIRA] Loading variance selector from: {selector_path}")
+    selector = load_model(selector_path)
+
+    if hasattr(model, "n_features_in_"):
+        expected = int(model.n_features_in_)
+        sample_shape = None
+        sample_text = ["This is a sample sentence.", "Another quick test sentence."]
+        sample_feats = pipeline.extract_batch(sample_text)
+        sample_feats = selector.transform(sample_feats)
+        sample_shape = sample_feats.shape[1]
+        if sample_shape != expected:
+            raise ValueError(
+                f"Feature mismatch before TIRA prediction: model expects {expected} features, "
+                f"but pipeline+selector produces {sample_shape}."
+            )
+
     os.makedirs(output_dir, exist_ok=True)
     
     # Find all problem files
@@ -110,28 +120,22 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
         if len(sentences) < 2:
             changes = []
         else:
-            # Extract features using FITTED pipeline
+            # Extract features using fitted pipeline
             sentence_features = pipeline.extract_batch(sentences)
-            sentence_features_df = None
-            if pd is not None:
-                sentence_features_df = pd.DataFrame(
-                    sentence_features,
-                    columns=pipeline.feature_names,
-                )
+            sentence_features = selector.transform(sentence_features)
 
             # Create pairwise differences
             changes = []
             for i in range(len(sentences) - 1):
-                if sentence_features_df is not None:
-                    pair_vec = np.abs(
-                        sentence_features_df.iloc[i] - sentence_features_df.iloc[i + 1]
+                X_pred = np.abs(sentence_features[i] - sentence_features[i + 1])
+                X_pred = X_pred.reshape(1, -1).astype(np.float32)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="X does not have valid feature names",
+                        category=UserWarning,
                     )
-                    X_pred = pair_vec.to_frame().T.astype(np.float32)
-                else:
-                    pair_vec = np.abs(sentence_features[i] - sentence_features[i + 1])
-                    X_pred = pair_vec.reshape(1, -1).astype(np.float32)
-
-                pred = model.predict(X_pred)[0]
+                    pred = model.predict(X_pred)[0]
                 changes.append(int(pred))
 
         output_path = os.path.join(output_dir, f"solution-problem-{problem_id}.json")

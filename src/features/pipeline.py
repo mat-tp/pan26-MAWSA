@@ -17,17 +17,39 @@ from pathlib import Path
 
 from features import (
     char_ngrams,
+    embeddings,
     function_words,
     lexical,
     pos_features,
     punctuation,
+    readability,
 )
 from features.ngram_features import NGramExtractor
 from utils.config import CACHE_DIR, CACHE_ENABLED
 
 # Available feature groups in extraction order.
 # Order matters for ablation reproducibility — do not change without note.
-ALL_GROUPS = ["lexical", "punctuation", "function_words", "char_ngrams", "pos", "ngram"]
+ALL_GROUPS = [
+    "lexical",
+    "punctuation",
+    "function_words",
+    "readability",
+    "char_ngrams",
+    "pos",
+    "ngram",
+    "embeddings",
+]
+
+# Default active groups if none are supplied. Embeddings are opt-in.
+DEFAULT_GROUPS = [
+    "lexical",
+    "punctuation",
+    "function_words",
+    "readability",
+    "char_ngrams",
+    "pos",
+    "ngram",
+]
 
 # Batch size for processing large document collections
 DEFAULT_BATCH_SIZE = 500
@@ -52,7 +74,7 @@ class FeaturePipeline:
             enable_sentence_cache: Whether to use sentence feature cache
         """
         if groups is None:
-            groups = ALL_GROUPS
+            groups = DEFAULT_GROUPS
         self.groups = groups
         self.use_per_word_fw = use_per_word_fw
 
@@ -89,20 +111,10 @@ class FeaturePipeline:
         # Get feature counts from each extractor without importing constants
         for group in self.groups:
             if group == 'lexical':
-                # Lexical features: 11 features
-                lexical_features = [
-                    'word_count', 'sentence_length', 'avg_word_length',
-                    'unique_words', 'type_token_ratio', 'hapax_legomena',
-                    'hapax_dislegomena', 'word_length_std', 'word_length_var',
-                    'char_count', 'char_variance'
-                ]
-                names.extend([f'lexical_{f}' for f in lexical_features])
+                names.extend([f'lexical_{f}' for f in lexical.NAMES])
 
             elif group == 'punctuation':
-                # Punctuation features: 14 features
-                punct_marks = ['.', ',', '!', '?', ';', ':', '-', '(', ')', 
-                              '"', "'", '...', '[', ']']
-                names.extend([f'punctuation_{p}' for p in punct_marks])
+                names.extend([f'punctuation_{f}' for f in punctuation.NAMES])
 
             elif group == 'function_words':
                 # Function-word features are either 4 aggregate stats or
@@ -112,8 +124,11 @@ class FeaturePipeline:
                 else:
                     names.extend(function_words.NAMES)
 
+            elif group == 'readability':
+                names.extend(readability.NAMES)
+
             elif group == 'char_ngrams':
-                # Character n-grams: 4096 * 3 = 12288
+                # Character n-grams: reduced dimension 1024 * 2 = 2048
                 names.extend(char_ngrams.NAMES)
 
             elif group == 'pos':
@@ -129,6 +144,9 @@ class FeaturePipeline:
                     for n in range(1, 4):  # n=1,2,3
                         for metric in ['log_prob', 'perplexity', 'entropy']:
                             names.append(f'ngram_{n}_{metric}')
+
+            elif group == 'embeddings':
+                names.extend(embeddings.get_feature_names())
 
         return names
 
@@ -179,10 +197,14 @@ class FeaturePipeline:
                     per_word=self.use_per_word_fw
                 )
             )
+        if "readability" in self.groups:
+            dense_parts.append(readability.extract_batch(sentences))
         if "pos" in self.groups:
             dense_parts.append(pos_features.extract_batch(sentences))
         if self.ngram_enabled and self._ngram_extractor:
             dense_parts.append(self._ngram_extractor.extract_batch(sentences))
+        if "embeddings" in self.groups:
+            dense_parts.append(embeddings.extract_batch(sentences))
 
         if "char_ngrams" in self.groups:
             sparse_part = char_ngrams.extract_batch(sentences)
@@ -273,7 +295,7 @@ class FeaturePipeline:
 
         return np.ascontiguousarray(features, dtype=np.float32)
 
-    def extract_document(self, sentences, use_cache=True, document_id=None):
+    def extract_document(self, sentences, use_cache=False, document_id=None):
         """
         Extract features for a document with caching support.
         

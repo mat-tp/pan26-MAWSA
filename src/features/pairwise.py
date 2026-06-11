@@ -36,11 +36,17 @@ import json
 import os
 import pickle
 import shutil
+import tempfile
 import time
 from typing import Iterator, List, Optional, Tuple
 
 import numpy as np
 from scipy.sparse import csr_matrix, load_npz, save_npz
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
 
 from utils.config import CACHE_DIR, CACHE_ENABLED
 from features.pipeline import FeaturePipeline
@@ -89,6 +95,12 @@ def _get_pairwise_cache_dir(cache_key: str, mode: str) -> str:
     d = os.path.join(CACHE_DIR, "pairwise", f"{mode}_{cache_key}")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _wrap_progress(iterable, desc=None):
+    if tqdm is None:
+        return iterable
+    return tqdm(iterable, desc=desc, unit="problem")
 
 
 # ============================================================================
@@ -246,6 +258,7 @@ class PairwiseDataset:
         y: np.ndarray,
         groups: np.ndarray,
         problem_meta: list,    # one dict per *problem* (not per pair)
+        cleanup_temp_cache: bool = False,
     ):
         self.cache_dir       = cache_dir
         self.n_pairs         = n_pairs
@@ -259,6 +272,7 @@ class PairwiseDataset:
         self._fitted = False
 
         self._dense_path = os.path.join(cache_dir, "dense.dat")
+        self.cleanup_temp_cache = cleanup_temp_cache
 
         # Sorted list of per-problem sparse chunk files.
         # When n_sparse == 0 this list is legitimately empty.
@@ -414,6 +428,17 @@ class PairwiseDataset:
             f"chunks={len(self._chunk_files)})"
         )
 
+    def cleanup(self) -> None:
+        if self.cleanup_temp_cache and os.path.isdir(self.cache_dir):
+            try:
+                shutil.rmtree(self.cache_dir)
+                print(f"[pairwise] Removed temporary runtime cache: {self.cache_dir}")
+            except Exception:
+                pass
+
+    def __del__(self):
+        self.cleanup()
+
 
 # ============================================================================
 # Sentence-feature cache helpers
@@ -450,9 +475,9 @@ def build_pairwise_dataset(
     feature_pipeline: Optional[FeaturePipeline] = None,
     min_sentences: int = 3,
     mode: str = "diff",
-    use_cache: bool = True,
+    use_cache: bool = False,
     n_jobs: int = 1,
-    cache_sentence_features: bool = True,
+    cache_sentence_features: bool = False,
 ) -> PairwiseDataset:
     """
     Build the pairwise training dataset without accumulating features in RAM.
@@ -515,7 +540,12 @@ def build_pairwise_dataset(
         "feature_names_hash": _hash_feature_names(all_names),
     }
     cache_key = _compute_cache_key(problems_hash, feat_config)
-    cache_dir = _get_pairwise_cache_dir(cache_key, mode)
+    persistent_cache = use_cache and CACHE_ENABLED
+    if persistent_cache:
+        cache_dir = _get_pairwise_cache_dir(cache_key, mode)
+    else:
+        cache_dir = tempfile.mkdtemp(prefix="pairwise_tmp_")
+        print(f"[pairwise] Cache disabled: using temporary runtime directory {cache_dir}")
 
     dense_path = os.path.join(cache_dir, "dense.dat")
     meta_path  = os.path.join(cache_dir, "meta.npz")
@@ -523,10 +553,9 @@ def build_pairwise_dataset(
     # ── Try pairwise cache ─────────────────────────────────────────────────
     # chunk files are written and the cache is still valid.
     # PairwiseDataset.__init__ handles an empty _chunk_files list correctly.
-    if use_cache and CACHE_ENABLED:
-        if os.path.exists(dense_path) and os.path.exists(meta_path):
-            print(f"[pairwise] Cache hit → {cache_dir}")
-            return _load_dataset_from_cache(cache_dir, dense_path, meta_path)
+    if persistent_cache and os.path.exists(dense_path) and os.path.exists(meta_path):
+        print(f"[pairwise] Cache hit → {cache_dir}")
+        return _load_dataset_from_cache(cache_dir, dense_path, meta_path)
 
     print("[pairwise] Building pairwise dataset from scratch …")
 
@@ -571,7 +600,7 @@ def build_pairwise_dataset(
     row = 0
 
     # ── Main loop — one problem at a time ─────────────────────────────────
-    for prob_idx, problem in enumerate(valid):
+    for prob_idx, problem in enumerate(_wrap_progress(valid, desc="[pairwise] Valid problems")):
         pid       = problem["problem_id"]
         diff      = problem["difficulty"]
         sentences = problem["sentences"]
@@ -671,14 +700,15 @@ def build_pairwise_dataset(
     print(f"[pairwise] Class distribution: {class_0} same / {class_1} switch")
 
     return PairwiseDataset(
-        cache_dir       = cache_dir,
-        n_pairs         = n_pairs,
-        n_dense         = n_dense,
-        n_sparse        = n_sparse,
-        pair_dense_cols = pdc,
-        y               = y,
-        groups          = groups,
-        problem_meta    = problem_meta,
+        cache_dir           = cache_dir,
+        n_pairs             = n_pairs,
+        n_dense             = n_dense,
+        n_sparse            = n_sparse,
+        pair_dense_cols     = pdc,
+        y                   = y,
+        groups              = groups,
+        problem_meta        = problem_meta,
+        cleanup_temp_cache  = not persistent_cache,
     )
 
 

@@ -49,7 +49,7 @@ def run_leave_one_out(
     model_name: str = "logistic_regression",
     n_splits: int = 5,
     groups=None,
-    use_cache: bool = True,
+    use_cache: bool = False,
 ):
     """
     Leave-one-out ablation: remove one feature group at a time, measure F1 drop.
@@ -139,7 +139,7 @@ def run_single_group(
     model_name: str = "logistic_regression",
     n_splits: int = 5,
     groups=None,
-    use_cache: bool = True,
+    use_cache: bool = False,
 ):
     """
     Single-group evaluation: train on each feature group in isolation.

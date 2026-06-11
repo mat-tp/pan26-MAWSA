@@ -8,3 +8,5 @@ lightgbm==4.0.0
 xgboost==1.7.6
 psutil==5.9.5
 joblib==1.5.1
+tqdm==4.67.0
+sentence-transformers==2.2.2
