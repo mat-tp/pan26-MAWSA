@@ -1,52 +1,44 @@
+# Use official Python runtime with system dependencies built-in
 FROM python:3.11-slim
 
+# Prevent Python from writing pyc files and buffering stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app:/app/src
+    PYTHONPATH=/app/src
 
 WORKDIR /app
 
-# System dependencies
+# Install minimal compilers required for Python C-extensions and file sanitization
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
-    curl \
+    sed \
     && rm -rf /var/lib/apt/lists/*
 
-# Python dependencies
+# Install Python packages
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
+RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# NLTK resources required by POS features
-RUN python - <<EOF
-import nltk
-nltk.download("punkt")
-nltk.download("stopwords")
-nltk.download("averaged_perceptron_tagger")
-nltk.download("averaged_perceptron_tagger_eng")
-nltk.download("universal_tagset")
-EOF
+# Pre-download required NLTK datasets into the image layer
+RUN python -c "import nltk; \
+    nltk.download('punkt'); \
+    nltk.download('stopwords'); \
+    nltk.download('averaged_perceptron_tagger_eng'); \
+    nltk.download('universal_tagset')"
 
-# Source code
-COPY src/ ./src/
+# Create required external integration and output paths
+RUN mkdir -p /output /app/dataset/outputs/models /app/src
 
-# Run script
+# Copy prediction script environment and source code
 COPY run.sh /app/run.sh
-RUN chmod +x /app/run.sh
+COPY src/ /app/src/
 
-# Model directory
-RUN mkdir -p /app/dataset/outputs/models
+# Cross-platform sanity fix: Clean hidden Windows line-endings and make executable
+RUN sed -i 's/$//' /app/run.sh && chmod +x /app/run.sh
 
-# Trained artifacts
-COPY dataset/outputs/models/best_model.pkl \
-    /app/dataset/outputs/models/best_model.pkl
-
-COPY dataset/outputs/models/feature_pipeline.pkl \
-    /app/dataset/outputs/models/feature_pipeline.pkl
-
-# TIRA output directory
-RUN mkdir -p /output
-
+# Defines the static execution entry point for production TIRA submissions
 ENTRYPOINT ["/app/run.sh"]
-CMD ["-h"]
+
+# Default fallback flag when no platform arguments are supplied
+CMD ["--help"]
