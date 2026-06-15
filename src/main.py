@@ -501,7 +501,7 @@ def run_predict(data_root: str, model_path: str = None) -> list:
 
 def run_full(
     data_root: str,
-    subset: float = 0.001,
+    subset: float = 1.0,
     use_hyperparam_search: bool = ENABLE_HYPERPARAM_SEARCH,
     search_method: str = HYPERPARAM_SEARCH_METHOD,
     search_cv: int = HYPERPARAM_SEARCH_CV,
@@ -562,7 +562,7 @@ def main() -> None:
     parser.add_argument(
         "--subset",
         type=float,
-        default=0.005,
+        default=1.0,
         help="Fraction of training data to use (0.005 recommended on 8 GB machines)",
     )
     parser.add_argument(

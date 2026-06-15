@@ -5,7 +5,6 @@ I/O utilities for saving/loading models, pipelines, and predictions.
 import json
 import os
 import pickle
-import cloudpickle
 import numpy as np
 
 
@@ -13,32 +12,30 @@ def save_model(model, path):
     """Save a trained model."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
-        cloudpickle.dump(model, f)
+        pickle.dump(model, f, protocol=4)
     print(f"[io] Model saved → {path}")
 
 
 def load_model(path):
     """Load a trained model."""
     with open(path, 'rb') as f:
-        model = cloudpickle.load(f)
+        model = pickle.load(f)
     print(f"[io] Model loaded ← {path}")
     return model
 
 
 def save_pipeline(pipeline, path):
     """Save a fitted feature pipeline."""
-    import cloudpickle
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
-        cloudpickle.dump(pipeline, f)
+        pickle.dump(pipeline, f, protocol=4)
     print(f"[io] Pipeline saved → {path}")
 
 
 def load_pipeline(path):
     """Load a fitted feature pipeline."""
-    import cloudpickle
     with open(path, 'rb') as f:
-        pipeline = cloudpickle.load(f)
+        pipeline = pickle.load(f)
     print(f"[io] Pipeline loaded ← {path}")
     return pipeline
 
