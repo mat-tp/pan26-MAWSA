@@ -24,6 +24,7 @@ from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -177,6 +178,20 @@ def make_logistic_regression(C=1.0, solver="lbfgs"):
         classifier=LogisticRegression(
             C=C, class_weight="balanced", solver=solver, max_iter=1000, random_state=42,
         ),
+    )
+
+
+def make_naive_bayes(var_smoothing=1e-9):
+    """
+    Gaussian Naive Bayes classifier.
+
+    Assumes feature independence and Gaussian distribution. Fast to train and
+    interpret, often performs surprisingly well on high-dimensional stylometric
+    features despite independence assumption violation.
+    """
+    return OptionalScalerPipeline(
+        scaler=_linear_scaler(),
+        classifier=GaussianNB(var_smoothing=var_smoothing),
     )
 
 
@@ -450,6 +465,7 @@ def make_torch_lstm_classifier(input_dim=None, epochs=50, batch_size=32, **kwarg
 
 MODEL_REGISTRY = {
     "logistic_regression": make_logistic_regression,
+    "naive_bayes":         make_naive_bayes,
     "linear_svc":          make_linear_svc,
     "naive_bayes":         make_naive_bayes,
     "mlp":                 make_mlp,
