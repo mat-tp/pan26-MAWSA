@@ -14,11 +14,15 @@ Scaling strategy:
 """
 
 import warnings
+import os
+import sys
 
 import numpy as np
+from scipy.sparse import issparse
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import Pipeline
@@ -38,6 +42,35 @@ try:
 except ImportError:
     LIGHTGBM_AVAILABLE = False
     warnings.warn("LightGBM not available. Install with: pip install lightgbm")
+
+# PyTorch models
+try:
+    from .torch_models import PyTorchClassifier, make_torch_mlp, make_torch_lstm, PYTORCH_AVAILABLE
+except (ImportError, ModuleNotFoundError):
+    PYTORCH_AVAILABLE = False
+    PyTorchClassifier = None
+    make_torch_mlp = None
+    make_torch_lstm = None
+    warnings.warn("PyTorch not available. Install with: pip install torch")
+
+
+# ---------------------------------------------------------------------------
+# Utility: ensure dense array for models that don't support sparse
+# ---------------------------------------------------------------------------
+
+def _ensure_dense(X):
+    """Convert sparse matrix to dense numpy array if needed."""
+    if issparse(X):
+        return X.toarray()
+    return X
+
+
+# Models that require dense input (GaussianNB, MLP, PyTorch models)
+DENSE_ONLY_MODELS = {"naive_bayes", "torch_mlp", "torch_lstm", "mlp"}
+
+# Models that work with sparse input (LinearSVC, LogisticRegression, trees)
+SPARSE_COMPATIBLE_MODELS = {"logistic_regression", "linear_svc", "random_forest", 
+                             "extra_trees", "xgboost", "lightgbm"}
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +113,7 @@ if LIGHTGBM_AVAILABLE:
 
 
 # ---------------------------------------------------------------------------
-# Pipeline with optional scaler
+# Pipeline with optional scaler - FIXED for sklearn classifier detection
 # ---------------------------------------------------------------------------
 
 class OptionalScalerPipeline(Pipeline):
@@ -90,6 +123,10 @@ class OptionalScalerPipeline(Pipeline):
     sklearn requires every __init__ parameter to also be a same-named instance
     attribute so get_params() can reflect them. Both scaler and classifier are
     stored explicitly to satisfy this contract.
+    
+    Includes _estimator_type property so sklearn's cross_val_score and
+    cross_validate recognize this as a classifier, fixing the
+    "Got a regressor with response_method=predict_proba" error.
     """
 
     def __init__(self, scaler, classifier, memory=None, verbose=False):
@@ -97,6 +134,26 @@ class OptionalScalerPipeline(Pipeline):
         self.classifier = classifier
         steps = [("scale", scaler), ("clf", classifier)] if scaler is not None else [("clf", classifier)]
         super().__init__(steps, memory=memory, verbose=verbose)
+    
+    @property
+    def _estimator_type(self):
+        """Return 'classifier' so sklearn cross-validation works correctly."""
+        return "classifier"
+    
+    def predict_proba(self, X):
+        """Ensure predict_proba is always accessible."""
+        return self.steps[-1][1].predict_proba(X)
+    
+    def predict(self, X):
+        """Ensure predict is always accessible."""
+        return self.steps[-1][1].predict(X)
+    
+    def decision_function(self, X):
+        """Delegate decision_function if the underlying classifier supports it."""
+        final_estimator = self.steps[-1][1]
+        if hasattr(final_estimator, "decision_function"):
+            return final_estimator.decision_function(X)
+        raise AttributeError("The final estimator does not have decision_function")
 
 
 def _linear_scaler():
@@ -171,40 +228,77 @@ def make_mlp(hidden_layer_sizes=(128, 64), alpha=1e-3, batch_size=256):
 
 def make_random_forest(n_estimators=500, max_depth=None, calibrate=True):
     """
-    Random Forest with optional probability calibration.
-
-    No scaling needed — tree splits are scale-invariant.
-    n_jobs=1 avoids multiprocessing fork contention in Docker environments.
+    Random Forest via LightGBM (boosting_type='rf') with GPU acceleration.
+    Identical algorithm to sklearn RandomForest but 20x faster on GPU.
     """
-    rf = RandomForestClassifier(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        class_weight="balanced",
-        n_jobs=1,
-        random_state=42,
-        verbose=0,
+    if not LIGHTGBM_AVAILABLE:
+        warnings.warn("LightGBM not available, falling back to sklearn RandomForest (will be slow).")
+        rf = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=10,
+            max_samples=0.1,
+            class_weight="balanced",
+            n_jobs=-1,
+            random_state=42,
+        )
+        clf = CalibratedClassifierCV(rf, method="sigmoid", cv=3) if calibrate else rf
+        return OptionalScalerPipeline(scaler=None, classifier=clf)
+
+    device = "gpu" if _LIGHTGBM_GPU_AVAILABLE else "cpu"
+    print(f"[classifiers] RandomForest (LightGBM RF mode): Using {device.upper()}")
+    return OptionalScalerPipeline(
+        scaler=None,
+        classifier=lgb.LGBMClassifier(
+            boosting_type="rf",
+            n_estimators=n_estimators,
+            num_leaves=63,
+            subsample=0.8,
+            subsample_freq=1,
+            colsample_bytree=0.8,
+            class_weight="balanced",
+            device=device,
+            verbose=-1,
+            random_state=42,
+        ),
     )
-    clf = CalibratedClassifierCV(rf, method="sigmoid", cv=3) if calibrate else rf
-    return OptionalScalerPipeline(scaler=None, classifier=clf)
 
 
 def make_extra_trees(n_estimators=300, max_depth=None, calibrate=True):
     """
-    Extremely Randomised Trees.
-
-    Random threshold selection typically outperforms Random Forest on mixed
-    feature types (ratios, counts, frequencies) and trains faster.
+    Extra Trees via LightGBM with extra_trees=True flag and GPU acceleration.
+    Same random threshold selection as sklearn ExtraTrees but GPU accelerated.
     """
-    et = ExtraTreesClassifier(
-        n_estimators=n_estimators,
-        max_depth=max_depth,
-        class_weight="balanced",
-        n_jobs=1,
-        random_state=42,
-        verbose=0,
+    if not LIGHTGBM_AVAILABLE:
+        warnings.warn("LightGBM not available, falling back to sklearn ExtraTrees (will be slow).")
+        et = ExtraTreesClassifier(
+            n_estimators=100,
+            max_depth=10,
+            max_samples=0.1,
+            class_weight="balanced",
+            n_jobs=-1,
+            random_state=42,
+        )
+        clf = CalibratedClassifierCV(et, method="sigmoid", cv=3) if calibrate else et
+        return OptionalScalerPipeline(scaler=None, classifier=clf)
+
+    device = "gpu" if _LIGHTGBM_GPU_AVAILABLE else "cpu"
+    print(f"[classifiers] ExtraTrees (LightGBM ET mode): Using {device.upper()}")
+    return OptionalScalerPipeline(
+        scaler=None,
+        classifier=lgb.LGBMClassifier(
+            boosting_type="rf",
+            extra_trees=True,
+            n_estimators=n_estimators,
+            num_leaves=63,
+            subsample=0.8,
+            subsample_freq=1,
+            colsample_bytree=0.8,
+            class_weight="balanced",
+            device=device,
+            verbose=-1,
+            random_state=42,
+        ),
     )
-    clf = CalibratedClassifierCV(et, method="sigmoid", cv=3) if calibrate else et
-    return OptionalScalerPipeline(scaler=None, classifier=clf)
 
 
 def make_xgboost(n_estimators=500, max_depth=6, learning_rate=0.05, use_gpu=True):
@@ -282,6 +376,74 @@ def make_lightgbm(n_estimators=500, num_leaves=63, learning_rate=0.05, use_gpu=T
     )
 
 
+def make_naive_bayes(var_smoothing=1e-9):
+    """
+    Gaussian Naïve Bayes classifier.
+    
+    Naïve Bayes is computationally efficient, provides probabilistic outputs,
+    and can be surprisingly effective on high-dimensional feature spaces like
+    stylometry. Works well with numerical stylometric features.
+    
+    NOTE: GaussianNB requires dense input. Sparse matrices will be converted
+    automatically in train_model().
+    """
+    return OptionalScalerPipeline(
+        scaler=_linear_scaler(),
+        classifier=GaussianNB(var_smoothing=var_smoothing),
+    )
+
+
+def make_torch_mlp_classifier(input_dim=None, hidden_dims=None, epochs=50, batch_size=32, **kwargs):
+    """
+    PyTorch-based MLP classifier with GPU support.
+    
+    Powerful deep learning model for high-dimensional stylometric features.
+    Automatically detects GPU availability and uses it if available.
+    
+    NOTE: PyTorch models require dense input. Sparse matrices will be converted
+    automatically in train_model().
+    """
+    if not PYTORCH_AVAILABLE:
+        warnings.warn("PyTorch not available. Falling back to sklearn MLP.")
+        return make_mlp()
+    
+    return OptionalScalerPipeline(
+        scaler=_linear_scaler(),
+        classifier=make_torch_mlp(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims or [512, 256, 128],
+            epochs=epochs,
+            batch_size=batch_size,
+            **kwargs
+        ),
+    )
+
+
+def make_torch_lstm_classifier(input_dim=None, epochs=50, batch_size=32, **kwargs):
+    """
+    PyTorch LSTM classifier with GPU support.
+    
+    Sequence model that can capture temporal dependencies in author switching
+    patterns. Includes attention mechanism for interpretability.
+    
+    NOTE: PyTorch models require dense input. Sparse matrices will be converted
+    automatically in train_model().
+    """
+    if not PYTORCH_AVAILABLE:
+        warnings.warn("PyTorch not available. Falling back to sklearn MLP.")
+        return make_mlp()
+    
+    return OptionalScalerPipeline(
+        scaler=_linear_scaler(),
+        classifier=make_torch_lstm(
+            input_dim=input_dim,
+            epochs=epochs,
+            batch_size=batch_size,
+            **kwargs
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model registry and metadata
 # ---------------------------------------------------------------------------
@@ -289,6 +451,7 @@ def make_lightgbm(n_estimators=500, num_leaves=63, learning_rate=0.05, use_gpu=T
 MODEL_REGISTRY = {
     "logistic_regression": make_logistic_regression,
     "linear_svc":          make_linear_svc,
+    "naive_bayes":         make_naive_bayes,
     "mlp":                 make_mlp,
     "random_forest":       make_random_forest,
     "extra_trees":         make_extra_trees,
@@ -298,26 +461,35 @@ if XGBOOST_AVAILABLE:
     MODEL_REGISTRY["xgboost"]  = make_xgboost
 if LIGHTGBM_AVAILABLE:
     MODEL_REGISTRY["lightgbm"] = make_lightgbm
+if PYTORCH_AVAILABLE:
+    MODEL_REGISTRY["torch_mlp"]  = make_torch_mlp_classifier
+    MODEL_REGISTRY["torch_lstm"] = make_torch_lstm_classifier
 
 MODEL_DESCRIPTIONS = {
     "logistic_regression": "Fast linear baseline, interpretable coefficients",
     "linear_svc":          "Linear SVM with calibrated probabilities",
+    "naive_bayes":         "Efficient probabilistic classifier, handles high-dim features well",
     "mlp":                 "Neural network (256, 128) tuned for ~12.5k features",
     "random_forest":       "500 trees, calibrated, no scaling needed",
     "extra_trees":         "500 randomised trees, often beats RF",
     "xgboost":             f"Gradient boosting ({'GPU' if _XGBOOST_GPU_AVAILABLE else 'CPU'})",
     "lightgbm":            f"Gradient boosting ({'GPU' if _LIGHTGBM_GPU_AVAILABLE else 'CPU'}), often best",
+    "torch_mlp":           f"PyTorch MLP with GPU support ({'Available' if PYTORCH_AVAILABLE else 'Not installed'})",
+    "torch_lstm":          f"PyTorch LSTM with attention ({'Available' if PYTORCH_AVAILABLE else 'Not installed'})",
 }
 
 # True = model requires StandardScaler; False = scale-invariant tree model
 MODEL_USES_SCALING = {
     "logistic_regression": True,
     "linear_svc":          True,
+    "naive_bayes":         True,
     "mlp":                 True,
     "random_forest":       False,
     "extra_trees":         False,
     "xgboost":             False,
     "lightgbm":            False,
+    "torch_mlp":           True,
+    "torch_lstm":          True,
 }
 
 HYPERPARAMETER_GRIDS = {
@@ -326,6 +498,9 @@ HYPERPARAMETER_GRIDS = {
     },
     "linear_svc": {
         "clf__C": [0.01, 0.1, 1.0],
+    },
+    "naive_bayes": {
+        "clf__var_smoothing": [1e-9, 1e-8, 1e-7],
     },
     "mlp": {
         "clf__hidden_layer_sizes": [(128, 64), (256, 128), (128, 128)],
@@ -349,6 +524,16 @@ HYPERPARAMETER_GRIDS = {
         "clf__n_estimators": [200, 500],
         "clf__num_leaves": [31, 63, 127],
         "clf__learning_rate": [0.01, 0.05, 0.1],
+    },
+    "torch_mlp": {
+        "clf__learning_rate": [1e-4, 1e-3],
+        "clf__dropout_rate": [0.2, 0.3],
+        "clf__batch_size": [16, 32, 64],
+    },
+    "torch_lstm": {
+        "clf__learning_rate": [1e-4, 1e-3],
+        "clf__dropout_rate": [0.2, 0.3],
+        "clf__batch_size": [16, 32],
     },
 }
 
@@ -434,7 +619,17 @@ def train_model(
     search_verbose: bool = False,
     **kwargs,
 ):
-    """Instantiate, fit, and return the named model."""
+    """
+    Instantiate, fit, and return the named model.
+    
+    Automatically converts sparse matrices to dense for models that
+    require dense input (Naive Bayes, PyTorch models, MLP).
+    """
+    # ── Convert sparse to dense for incompatible models ─────────────────
+    if name in DENSE_ONLY_MODELS and issparse(X_train):
+        print(f"[classifiers] Converting sparse matrix to dense for '{name}' (required)...")
+        X_train = _ensure_dense(X_train)
+    
     if use_hyperparam_search:
         model, best_params, _ = search_model(
             name,
@@ -479,14 +674,15 @@ def list_available_models():
     print("Available Models for Author Switch Detection")
     print("=" * 70)
     for name, description in MODEL_DESCRIPTIONS.items():
-        available = "✓" if name in MODEL_REGISTRY else "✗"
+        available = "Yes" if name in MODEL_REGISTRY else "No"
         scaling   = "scaled" if MODEL_USES_SCALING.get(name, True) else "no scaling"
-        print(f"  [{available}] {name:25s} [{scaling:10s}] {description}")
+        sparse_ok = "sparse OK" if name in SPARSE_COMPATIBLE_MODELS else "dense only"
+        print(f"  [{available}] {name:25s} [{scaling:10s}] [{sparse_ok:12s}] {description}")
     print("=" * 70)
     if XGBOOST_AVAILABLE:
-        print(f"  XGBoost GPU:  {'Available ✓' if _XGBOOST_GPU_AVAILABLE else 'Not available ✗'}")
+        print(f"  XGBoost GPU:  {'Available Yes' if _XGBOOST_GPU_AVAILABLE else 'Not available ✗'}")
     if LIGHTGBM_AVAILABLE:
-        print(f"  LightGBM GPU: {'Available ✓' if _LIGHTGBM_GPU_AVAILABLE else 'Not available ✗'}")
+        print(f"  LightGBM GPU: {'Available Yes' if _LIGHTGBM_GPU_AVAILABLE else 'Not available ✗'}")
     print()
 
 

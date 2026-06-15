@@ -89,15 +89,21 @@ ACTIVE_FEATURE_GROUPS = [
     "char_ngrams",
     "pos",
     "ngram",
+    "syntax",
+    "social_media",
+    "advanced",  # New: semantic, discourse, modality, complexity, sentiment, cohesion
 ]
 
 # Optional embedding feature group. Set to True only if sentence-transformers is installed
 # and you want to compare embedding-based representations.
-USE_EMBEDDINGS: bool = False
+USE_EMBEDDINGS: bool = False  # DISABLED temporarily due to PCA fitting issue - to be fixed
 EMBEDDING_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
 
+# Enable advanced feature extraction (semantic, contextual, pragmatic)
+USE_ADVANCED_FEATURES: bool = False  # DISABLED temporarily due to shape mismatch - to be fixed
+
 # Expand function-word features to per-word frequency vector (~180 extra features, more RAM)
-USE_PER_WORD_FW: bool = False
+USE_PER_WORD_FW: bool = True
 
 # Minimum sentences per problem to generate training pairs
 MIN_SENTENCES_PER_PROBLEM: int = 3
@@ -114,8 +120,10 @@ AUTO_SELECT_BEST_MODEL = True
 PRIMARY_MODEL = "lightgbm"  # best overall for stylometry
 
 # Models evaluated during compare_all_models() cross-validation sweep
+# Includes GPU-accelerated and PyTorch models
 MODELS_TO_COMPARE = [
     "logistic_regression",
+    "naive_bayes",
     "linear_svc",
     "mlp",
     "random_forest",
@@ -124,7 +132,30 @@ MODELS_TO_COMPARE = [
     "lightgbm",
 ]
 
+# Add PyTorch models if GPU is available (high cost but powerful)
+if CUDA_AVAILABLE:
+    MODELS_TO_COMPARE.extend([
+        "torch_mlp",
+        "torch_lstm",
+    ])
+    print("[config] GPU available - PyTorch models enabled for comparison")
+
 RANDOM_SEED: int = 42
+
+# ---------------------------------------------------------------------------
+# GPU acceleration settings
+# ---------------------------------------------------------------------------
+
+# Force GPU usage for XGBoost and LightGBM (if CUDA_AVAILABLE)
+USE_GPU_FOR_TREES: bool = CUDA_AVAILABLE
+USE_GPU_FOR_PYTORCH: bool = CUDA_AVAILABLE
+
+# PyTorch training parameters
+PYTORCH_BATCH_SIZE: int = 32
+PYTORCH_EPOCHS: int = 100
+PYTORCH_LEARNING_RATE: float = 1e-3
+PYTORCH_DROPOUT: float = 0.3
+PYTORCH_HIDDEN_DIMS: list = [512, 256, 128]  # Powerful architecture for ~10k+ features
 
 # ---------------------------------------------------------------------------
 # Feature importance settings
@@ -132,10 +163,10 @@ RANDOM_SEED: int = 42
 
 PERM_IMP_REPEATS: int = 5   # shuffles per feature (higher = more stable estimates)
 PERM_IMP_TOP_K:   int = 30  # number of features to display
-ENABLE_PERM_IMPORTANCE: bool = False  # set False to skip permutation importance entirely
+ENABLE_PERM_IMPORTANCE: bool = True  # set False to skip permutation importance entirely
 
 # Hyperparameter search settings
-ENABLE_HYPERPARAM_SEARCH: bool = False
+ENABLE_HYPERPARAM_SEARCH: bool = True
 HYPERPARAM_SEARCH_METHOD: str = "randomized"  # 'grid' or 'randomized'
 HYPERPARAM_SEARCH_N_ITER: int = 25
 HYPERPARAM_SEARCH_CV: int = 5

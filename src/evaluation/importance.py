@@ -88,7 +88,7 @@ def permutation_importance(
         n_repeats=n_repeats,
         scoring="f1",
         random_state=random_state,
-        n_jobs=-1,
+        n_jobs=1,  # n_jobs=-1 breaks on Python 3.14/Windows (no _posixsubprocess)
     )
 
     n_feats = len(result.importances_mean)

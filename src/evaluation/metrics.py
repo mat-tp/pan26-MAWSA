@@ -185,6 +185,8 @@ def compute_metrics(y_true, y_pred, y_prob=None):
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall":    float(recall_score(y_true, y_pred, zero_division=0)),
         "f1":        float(f1_score(y_true, y_pred, zero_division=0)),
+        # PAN@CLEF official metric: macro-F1 over binary {0,1}
+        "pan_f1":    float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
     }
 
     if y_prob is not None:
@@ -227,6 +229,8 @@ def print_classification_report(y_true, y_pred, y_prob=None, metrics=None):
     print(f"  Precision:    {metrics['precision']:.4f}")
     print(f"  Recall:       {metrics['recall']:.4f}")
     print(f"  F1 Score:     {metrics['f1']:.4f}")
+    if "pan_f1" in metrics:
+        print(f"  PAN F1 (macro, official): {metrics['pan_f1']:.4f}  ← TIRA metric")
     if "roc_auc" in metrics:
         print(f"  ROC-AUC:      {metrics['roc_auc']:.4f}")
     if "avg_precision" in metrics:
@@ -389,7 +393,7 @@ def save_diagnostic_plots(y_true, y_pred, y_prob, prefix: str = "eval"):
 # Multi-model comparison
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compare_all_models(X, y, groups, n_splits: int = 5):
+def compare_all_models(X, y, groups=None, n_splits: int = 5):
     """
     Cross-validate every model in MODELS_TO_COMPARE.
 

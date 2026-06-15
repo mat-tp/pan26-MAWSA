@@ -111,11 +111,27 @@ def _sparse_col_mask(feature_names: list) -> np.ndarray:
     """
     Boolean mask: True for char-ngram columns (cng2_*, cng3_*, cng4_*).
     These are ~12 288 near-zero columns — the dominant memory source.
+    
+    Falls back to treating the last 512 features as sparse if names are
+    generic (feature_0, feature_1, etc.) — this handles the case where
+    the pipeline uses generic names after dimension locking.
     """
-    return np.array(
+    # Try to identify by name pattern first
+    mask = np.array(
         [n.startswith(("cng2_", "cng3_", "cng4_")) for n in feature_names],
         dtype=bool,
     )
+    
+    # If no matches found but we have generic names, assume last 512 are sparse
+    # This handles the case where feature_names are "feature_0", "feature_1", etc.
+    if not mask.any() and len(feature_names) > 512:
+        # Check if names look generic
+        if feature_names[0].startswith("feature_"):
+            mask = np.zeros(len(feature_names), dtype=bool)
+            mask[-512:] = True  # Last 512 features are char-ngrams
+            print(f"[pairwise] Using heuristic: last 512 features assumed to be sparse char-ngrams")
+    
+    return mask
 
 
 # ============================================================================
@@ -280,7 +296,7 @@ class PairwiseDataset:
             glob.glob(os.path.join(cache_dir, "sparse_[0-9]*.npz"))
         )
 
-            # Only enforced when sparse features exist; an empty list is valid
+        # Only enforced when sparse features exist; an empty list is valid
         # when n_sparse == 0.
         if n_sparse > 0 and len(self._chunk_files) != len(problem_meta):
             raise RuntimeError(
@@ -517,12 +533,17 @@ def build_pairwise_dataset(
     if feature_pipeline is None:
         feature_pipeline = FeaturePipeline()
 
+    # ── Get actual dense/sparse split from pipeline ───────────────────────
+    # This is more reliable than trying to infer from feature names
+    n_dense, n_sparse = feature_pipeline.get_dimension_split()
+    
+    print(
+        f"[pairwise] Pipeline reports: {n_dense} dense + {n_sparse} sparse = "
+        f"{n_dense + n_sparse} total features"
+    )
+
     # ── Column layout ──────────────────────────────────────────────────────
     all_names    = feature_pipeline.feature_names
-    sparse_mask  = _sparse_col_mask(all_names)
-    n_dense      = int((~sparse_mask).sum())
-    n_sparse     = int(sparse_mask.sum())
-
     pdc = _pair_dense_cols(n_dense, mode)
 
     # ── Cache key ──────────────────────────────────────────────────────────
@@ -572,12 +593,14 @@ def build_pairwise_dataset(
 
     # ── Fit n-gram models ──────────────────────────────────────────────────
     # Skip refitting - pipeline should already be fitted by caller
-    # Skip refitting - pipeline should already be fitted by caller
     if feature_pipeline.ngram_enabled and not feature_pipeline.is_fitted:
         # If not fitted, fit it now (but this shouldn't happen)
         all_sents = [s for p in valid for s in p["sentences"]]
         print(f"[pairwise] WARNING: Pipeline not fitted, fitting now...")
         feature_pipeline.fit(all_sents)
+        # Re-get split after fitting
+        n_dense, n_sparse = feature_pipeline.get_dimension_split()
+        pdc = _pair_dense_cols(n_dense, mode)
 
     # ── Sentence-feature cache ─────────────────────────────────────────────
     use_sc = use_cache and CACHE_ENABLED and cache_sentence_features
@@ -632,14 +655,15 @@ def build_pairwise_dataset(
         X_mm[row: row + n_pairs_p] = pair_dense
 
         # Sparse columns → compute diff entirely in sparse arithmetic.
-        # Slices from a CSR matrix are already CSR; tocsr() guarantees format.
-        # abs() the non-zero values in-place via .data; no dense intermediate.
-        left_sp  = left_sp.tocsr().astype(np.float32, copy=False)
-        right_sp = right_sp.tocsr().astype(np.float32, copy=False)
-        pair_sparse = (left_sp - right_sp).tocsr()
-        pair_sparse.data = np.abs(pair_sparse.data)    # in-place, stays sparse
-        chunk_path = os.path.join(cache_dir, f"sparse_{prob_idx:06d}.npz")
-        save_npz(chunk_path, pair_sparse)
+        if n_sparse > 0:
+            # Slices from a CSR matrix are already CSR; tocsr() guarantees format.
+            # abs() the non-zero values in-place via .data; no dense intermediate.
+            left_sp  = left_sp.tocsr().astype(np.float32, copy=False)
+            right_sp = right_sp.tocsr().astype(np.float32, copy=False)
+            pair_sparse = (left_sp - right_sp).tocsr()
+            pair_sparse.data = np.abs(pair_sparse.data)    # in-place, stays sparse
+            chunk_path = os.path.join(cache_dir, f"sparse_{prob_idx:06d}.npz")
+            save_npz(chunk_path, pair_sparse)
 
         # Labels / groups
         y_buf[row: row + n_pairs_p]      = np.asarray(changes, dtype=np.int8)
@@ -654,7 +678,9 @@ def build_pairwise_dataset(
 
         row += n_pairs_p
 
-        del dense_mat, sparse_mat, left_dense, right_dense, pair_dense, left_sp, right_sp, pair_sparse
+        del dense_mat, sparse_mat, left_dense, right_dense, pair_dense
+        if n_sparse > 0:
+            del left_sp, right_sp, pair_sparse
         if prob_idx % 100 == 0:
             gc.collect()
 
@@ -799,9 +825,6 @@ def build_pairwise_from_texts(
     if feature_pipeline.ngram_enabled and not feature_pipeline._fitted:
         feature_pipeline.fit(texts1 + texts2)
 
-    all_names   = feature_pipeline.feature_names
-    sparse_mask = _sparse_col_mask(all_names)
-
     f1_dense, f1_sparse = feature_pipeline.extract_split(texts1)
     f2_dense, f2_sparse = feature_pipeline.extract_split(texts2)
 
@@ -810,10 +833,16 @@ def build_pairwise_from_texts(
         f2_dense.astype(np.float32, copy=False),
         mode,
     )
-    f1_sp    = f1_sparse.tocsr().astype(np.float32, copy=False)
-    f2_sp    = f2_sparse.tocsr().astype(np.float32, copy=False)
-    X_sparse = (f1_sp - f2_sp).tocsr()
-    X_sparse.data = np.abs(X_sparse.data)   # in-place abs on non-zeros only
+    
+    n_sparse = f1_sparse.shape[1]
+    if n_sparse > 0:
+        f1_sp    = f1_sparse.tocsr().astype(np.float32, copy=False)
+        f2_sp    = f2_sparse.tocsr().astype(np.float32, copy=False)
+        X_sparse = (f1_sp - f2_sp).tocsr()
+        X_sparse.data = np.abs(X_sparse.data)   # in-place abs on non-zeros only
+    else:
+        X_sparse = csr_matrix((len(texts1), 0), dtype=np.float32)
+    
     meta = [
         {"pair_idx": i, "sentence1": texts1[i][:100], "sentence2": texts2[i][:100]}
         for i in range(len(texts1))

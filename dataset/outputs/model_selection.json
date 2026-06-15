@@ -1,347 +1,419 @@
 {
-  "best_model": "lightgbm",
-  "best_f1": 0.0,
-  "feature_count": 36,
-  "cv_results": {
+  "best_model": "xgboost",
+  "best_val_f1": 0.7248236804282144,
+  "best_test_f1": 0.7262381653945614,
+  "feature_count": 54,
+  "original_feature_count": 835,
+  "survived_features": [
+    "lexical_n_chars",
+    "lexical_n_tokens",
+    "lexical_avg_word_len",
+    "lexical_std_word_len",
+    "lexical_honore_r",
+    "lexical_brunet_w",
+    "lexical_yules_k",
+    "punctuation_n_commas",
+    "punctuation_n_periods",
+    "punctuation_n_semicolons",
+    "punctuation_n_colons",
+    "punctuation_n_exclamations",
+    "punctuation_n_questions",
+    "punctuation_n_quotes",
+    "punctuation_n_parens",
+    "punctuation_n_dashes",
+    "punctuation_n_ellipses",
+    "punctuation_punct_density",
+    "punctuation_comma_period_ratio",
+    "fw_a",
+    "pos_adv",
+    "pos_conj",
+    "pos_det",
+    "pos_noun",
+    "pos_num",
+    "ngram_2_perplexity",
+    "ngram_2_entropy",
+    "ngram_3_log_prob",
+    "ngram_3_perplexity",
+    "ngram_3_entropy",
+    "subordinator_ratio",
+    "n_subordinators",
+    "n_commas_per_word",
+    "clause_depth_proxy",
+    "discourse_connective_ratio",
+    "hedge_ratio",
+    "booster_ratio",
+    "numeric_token_ratio",
+    "has_url",
+    "char_entropy",
+    "n_mentions",
+    "n_urls",
+    "hashtag_ratio",
+    "mention_ratio",
+    "slang_ratio",
+    "n_repeated_chars",
+    "n_questions",
+    "avg_token_len",
+    "non_ascii_ratio",
+    "avg_token_length",
+    "cohesion_density",
+    "content_density",
+    "demonstrative_pronouns",
+    "discourse_additive_count"
+  ],
+  "split": {
+    "train": 1707350,
+    "val": 365861,
+    "test": 365861
+  },
+  "val_metrics": {
     "logistic_regression": {
-      "test_accuracy_mean": 0.7654016063046307,
-      "test_accuracy_std": 0.02173807678064707,
-      "test_accuracy_all": [
-        0.7435328898743533,
-        0.7685609532538955,
-        0.7678364828384111,
-        0.7440758293838863,
-        0.8030018761726079
-      ],
-      "test_precision_mean": 0.3271919897167381,
-      "test_precision_std": 0.0395408566208997,
-      "test_precision_all": [
-        0.26962025316455696,
-        0.32783882783882784,
-        0.33280757097791797,
-        0.31313131313131315,
-        0.3925619834710744
-      ],
-      "test_recall_mean": 0.5820510791895332,
-      "test_recall_std": 0.037311080515229626,
-      "test_recall_all": [
-        0.6454545454545455,
-        0.5646687697160884,
-        0.541025641025641,
-        0.5578406169665809,
-        0.6012658227848101
-      ],
-      "test_f1_mean": 0.416681511323692,
-      "test_f1_std": 0.03158269267032506,
-      "test_f1_all": [
-        0.38035714285714284,
-        0.4148319814600232,
-        0.412109375,
-        0.4011090573012939,
-        0.475
-      ],
-      "test_roc_auc_mean": 0.7337314670811667,
-      "test_roc_auc_std": 0.027650023921181467,
-      "test_roc_auc_all": [
-        0.7700056116722784,
-        0.7226376637545352,
-        0.7083697056461469,
-        0.7043221968578274,
-        0.7633221574750461
-      ],
-      "test_average_precision_mean": 0.5251866048346756,
-      "test_average_precision_std": 0.034119511024985893,
-      "test_average_precision_all": [
-        0.5467433276791038,
-        0.5044095249258869,
-        0.5202953530670906,
-        0.4777856159551583,
-        0.5766992025461379
-      ]
+      "pan_f1": 0.502469221459403,
+      "f1_macro": 0.502469221459403,
+      "f1_binary": 0.16986048352518224,
+      "precision": 0.5039661086424136,
+      "recall": 0.5049660886506464,
+      "accuracy": 0.7248244551892659,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.4921124971047162,
+      "avg_precision": 0.1438086801947716,
+      "tn": 254885,
+      "fp": 58777,
+      "fn": 41899,
+      "tp": 10300
+    },
+    "naive_bayes": {
+      "pan_f1": 0.12524698752729407,
+      "f1_macro": 0.12524698752729407,
+      "f1_binary": 0.24978645719932335,
+      "precision": 0.5713588516746412,
+      "recall": 0.5001769420586492,
+      "accuracy": 0.14297779757886192,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.500176942058649,
+      "avg_precision": 0.1427177033492823,
+      "tn": 111,
+      "fp": 313551,
+      "fn": 0,
+      "tp": 52199
     },
     "linear_svc": {
-      "test_accuracy_mean": 0.888264153496026,
-      "test_accuracy_std": 0.011575842490184552,
-      "test_accuracy_all": [
-        0.909460458240946,
-        0.8854262144821264,
-        0.8854608561511762,
-        0.8740126382306477,
-        0.8869606003752345
-      ],
-      "test_precision_mean": 0.8420851511718765,
-      "test_precision_std": 0.06910006917829985,
-      "test_precision_all": [
-        0.7741935483870968,
-        0.819047619047619,
-        0.926605504587156,
-        0.7692307692307693,
-        0.9213483146067416
-      ],
-      "test_recall_mean": 0.28209343552629607,
-      "test_recall_std": 0.04107878625911148,
-      "test_recall_all": [
-        0.36363636363636365,
-        0.27129337539432175,
-        0.258974358974359,
-        0.2570694087403599,
-        0.25949367088607594
-      ],
-      "test_f1_mean": 0.4195065289554799,
-      "test_f1_std": 0.03850343477441716,
-      "test_f1_all": [
-        0.4948453608247423,
-        0.4075829383886256,
-        0.40480961923847697,
-        0.3853564547206166,
-        0.4049382716049383
-      ],
-      "test_roc_auc_mean": 0.7336963904214564,
-      "test_roc_auc_std": 0.027379997339465473,
-      "test_roc_auc_all": [
-        0.7709532190592797,
-        0.7236812949822818,
-        0.7074781475144616,
-        0.705148705596148,
-        0.7612205849551107
-      ],
-      "test_average_precision_mean": 0.5237609020238317,
-      "test_average_precision_std": 0.032577390563883396,
-      "test_average_precision_all": [
-        0.5446362256874651,
-        0.5053203533165526,
-        0.5176301250848541,
-        0.4782476199673378,
-        0.5729701860629491
-      ]
+      "pan_f1": 0.48715402193624857,
+      "f1_macro": 0.48715402193624857,
+      "f1_binary": 0.20602166929819785,
+      "precision": 0.50570112243402,
+      "recall": 0.509954453762738,
+      "accuracy": 0.641265398607668,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.5020880534643293,
+      "avg_precision": 0.1453843500011416,
+      "tn": 217586,
+      "fp": 96076,
+      "fn": 35171,
+      "tp": 17028
     },
     "mlp": {
-      "test_accuracy_mean": 0.8915877990173622,
-      "test_accuracy_std": 0.01313037123521424,
-      "test_accuracy_all": [
-        0.9127864005912787,
-        0.8895508707607699,
-        0.8881604319321249,
-        0.8720379146919431,
-        0.8954033771106942
-      ],
-      "test_precision_mean": 0.7946912774862973,
-      "test_precision_std": 0.07018508517430386,
-      "test_precision_all": [
-        0.75,
-        0.7794117647058824,
-        0.8472222222222222,
-        0.6993865030674846,
-        0.8974358974358975
-      ],
-      "test_recall_mean": 0.3399631410228145,
-      "test_recall_std": 0.0461515849911083,
-      "test_recall_all": [
-        0.42727272727272725,
-        0.334384858044164,
-        0.3128205128205128,
-        0.2930591259640103,
-        0.3322784810126582
-      ],
-      "test_f1_mean": 0.4734706968495078,
-      "test_f1_std": 0.042705856406552244,
-      "test_f1_all": [
-        0.5444015444015444,
-        0.46799116997792495,
-        0.45692883895131087,
-        0.41304347826086957,
-        0.48498845265588914
-      ],
-      "test_roc_auc_mean": 0.7332423038380448,
-      "test_roc_auc_std": 0.023555109937383762,
-      "test_roc_auc_all": [
-        0.773561371288644,
-        0.7329454250217775,
-        0.7013966968120395,
-        0.7220501495273066,
-        0.7362578765404562
-      ],
-      "test_average_precision_mean": 0.5263977040807781,
-      "test_average_precision_std": 0.031838410141660944,
-      "test_average_precision_all": [
-        0.5552347424655446,
-        0.5127590821845687,
-        0.5243188980378131,
-        0.4753381713980049,
-        0.5643376263179596
-      ]
+      "pan_f1": 0.4621254438300904,
+      "f1_macro": 0.4621254438300904,
+      "f1_binary": 0.0011094320855410394,
+      "precision": 0.6099368372058691,
+      "recall": 0.5001964853966705,
+      "accuracy": 0.8572654642063516,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.4997337814776732,
+      "avg_precision": 0.14279271880340488,
+      "tn": 313611,
+      "fp": 51,
+      "fn": 52170,
+      "tp": 29
     },
     "random_forest": {
-      "test_accuracy_mean": 0.8947807472810846,
-      "test_accuracy_std": 0.012060824587471269,
-      "test_accuracy_all": [
-        0.9168514412416852,
-        0.888634280476627,
-        0.895102198225993,
-        0.8807266982622433,
-        0.8925891181988743
-      ],
-      "test_precision_mean": 0.8205047308722339,
-      "test_precision_std": 0.05369963427484381,
-      "test_precision_all": [
-        0.7837837837837838,
-        0.7605633802816901,
-        0.8782051282051282,
-        0.7880794701986755,
-        0.8918918918918919
-      ],
-      "test_recall_mean": 0.35011474652533464,
-      "test_recall_std": 0.047687934228616835,
-      "test_recall_all": [
-        0.4393939393939394,
-        0.34069400630914826,
-        0.35128205128205126,
-        0.3059125964010283,
-        0.31329113924050633
-      ],
-      "test_f1_mean": 0.48799350163498045,
-      "test_f1_std": 0.0423306669186443,
-      "test_f1_all": [
-        0.5631067961165048,
-        0.47058823529411764,
-        0.5018315018315018,
-        0.44074074074074077,
-        0.4637002341920375
-      ],
-      "test_roc_auc_mean": 0.7388403317411213,
-      "test_roc_auc_std": 0.011352709516004105,
-      "test_roc_auc_all": [
-        0.758669395980002,
-        0.7354766959007453,
-        0.7330126750235694,
-        0.7248793525161732,
-        0.7421635392851168
-      ],
-      "test_average_precision_mean": 0.539106762056407,
-      "test_average_precision_std": 0.024161331684165538,
-      "test_average_precision_all": [
-        0.5689980632750317,
-        0.5089413304763094,
-        0.5479408552111175,
-        0.5124579529141473,
-        0.5571956084054288
-      ]
+      "pan_f1": 0.6989726160157608,
+      "f1_macro": 0.6989726160157608,
+      "f1_binary": 0.48991277119212706,
+      "precision": 0.689274333767067,
+      "recall": 0.710942799199077,
+      "accuracy": 0.8441621271466486,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7606509384344886,
+      "avg_precision": 0.5508549499369733,
+      "tn": 281466,
+      "fp": 32196,
+      "fn": 24819,
+      "tp": 27380
     },
     "extra_trees": {
-      "test_accuracy_mean": 0.8960958015693464,
-      "test_accuracy_std": 0.01150882683479958,
-      "test_accuracy_all": [
-        0.9172209903917221,
-        0.891384051329056,
-        0.895102198225993,
-        0.882306477093207,
-        0.8944652908067542
-      ],
-      "test_precision_mean": 0.8360809148914903,
-      "test_precision_std": 0.04496223862328019,
-      "test_precision_all": [
-        0.7849462365591398,
-        0.7985074626865671,
-        0.8831168831168831,
-        0.8181818181818182,
-        0.8956521739130435
-      ],
-      "test_recall_mean": 0.3510804397267352,
-      "test_recall_std": 0.04836366430822668,
-      "test_recall_all": [
-        0.44242424242424244,
-        0.33753943217665616,
-        0.3487179487179487,
-        0.30077120822622105,
-        0.3259493670886076
-      ],
-      "test_f1_mean": 0.49164008844695006,
-      "test_f1_std": 0.04182426594207458,
-      "test_f1_all": [
-        0.5658914728682171,
-        0.4745011086474501,
-        0.5,
-        0.4398496240601504,
-        0.4779582366589327
-      ],
-      "test_roc_auc_mean": 0.7429841659783147,
-      "test_roc_auc_std": 0.014381305855824382,
-      "test_roc_auc_all": [
-        0.7679560759106213,
-        0.7292597322417774,
-        0.7436118579559342,
-        0.7283503293439391,
-        0.7457428344393018
-      ],
-      "test_average_precision_mean": 0.5482416451877564,
-      "test_average_precision_std": 0.025707201734784097,
-      "test_average_precision_all": [
-        0.5776042317854735,
-        0.5210927913848287,
-        0.5620370608354348,
-        0.5139062958086911,
-        0.5665678461243543
-      ]
+      "pan_f1": 0.6895845684108588,
+      "f1_macro": 0.6895845684108588,
+      "f1_binary": 0.46740133856450494,
+      "precision": 0.6902058824894395,
+      "recall": 0.6889707601490065,
+      "accuracy": 0.8486146377996014,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7488242388748216,
+      "avg_precision": 0.5327182514297804,
+      "tn": 286172,
+      "fp": 27490,
+      "fn": 27896,
+      "tp": 24303
     },
     "xgboost": {
-      "error": "OptionalScalerPipeline should either be a classifier to be used with response_method=predict_proba or the response_method should be 'predict'. Got a regressor with response_method=predict_proba instead."
+      "pan_f1": 0.7248236804282144,
+      "f1_macro": 0.7248236804282144,
+      "f1_binary": 0.5051247288503253,
+      "precision": 0.883255775079204,
+      "recall": 0.6737682948848464,
+      "accuracy": 0.9002298687206344,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7812160123735747,
+      "avg_precision": 0.5884451274211493,
+      "tn": 310730,
+      "fp": 2932,
+      "fn": 33570,
+      "tp": 18629
     },
     "lightgbm": {
-      "test_accuracy_mean": 0.8940604216182321,
-      "test_accuracy_std": 0.007085936948270199,
-      "test_accuracy_all": [
-        0.9050258684405026,
-        0.8904674610449129,
-        0.8931739298110297,
-        0.8838862559241706,
-        0.8977485928705441
-      ],
-      "test_precision_mean": 0.7615027688721513,
-      "test_precision_std": 0.06827006070696272,
-      "test_precision_all": [
-        0.6489795918367347,
-        0.75,
-        0.8021390374331551,
-        0.7513227513227513,
-        0.855072463768116
-      ],
-      "test_recall_mean": 0.39479500437308845,
-      "test_recall_std": 0.04400019921311264,
-      "test_recall_all": [
-        0.4818181818181818,
-        0.36908517350157727,
-        0.38461538461538464,
-        0.36503856041131105,
-        0.37341772151898733
-      ],
-      "test_f1_mean": 0.5157724022847411,
-      "test_f1_std": 0.022193461711473416,
-      "test_f1_all": [
-        0.5530434782608695,
-        0.49471458773784355,
-        0.5199306759098787,
-        0.4913494809688581,
-        0.5198237885462555
-      ],
-      "test_roc_auc_mean": 0.7359027936504328,
-      "test_roc_auc_std": 0.018976979336596523,
-      "test_roc_auc_all": [
-        0.7603509845934088,
-        0.7195135359139385,
-        0.7214392960648067,
-        0.7203353538213134,
-        0.7578747978586962
-      ],
-      "test_average_precision_mean": 0.5449759240590866,
-      "test_average_precision_std": 0.02503484265069462,
-      "test_average_precision_all": [
-        0.5679064885519775,
-        0.5271386324296948,
-        0.5459591869620863,
-        0.5082456094682428,
-        0.5756297028834311
-      ]
+      "pan_f1": 0.7090919593296564,
+      "f1_macro": 0.7090919593296564,
+      "f1_binary": 0.5072697899838449,
+      "precision": 0.6985847002148606,
+      "recall": 0.7221081578008375,
+      "accuracy": 0.8491093612054852,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7818623759384942,
+      "avg_precision": 0.5886241941476766,
+      "tn": 282239,
+      "fp": 31423,
+      "fn": 23782,
+      "tp": 28417
+    },
+    "torch_mlp": {
+      "pan_f1": 0.5029465363905379,
+      "f1_macro": 0.5029465363905379,
+      "f1_binary": 0.16391694966255427,
+      "precision": 0.5036430491269728,
+      "recall": 0.5043047450969781,
+      "accuracy": 0.7341914005592288,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.5041715444955372,
+      "avg_precision": 0.14378060073774296,
+      "tn": 259079,
+      "fp": 54583,
+      "fn": 42666,
+      "tp": 9533
+    },
+    "torch_lstm": {
+      "pan_f1": 0.0,
+      "error": "CUDA out of memory. Tried to allocate 43.41 GiB. GPU 0 has a total capacity of 7.96 GiB of which 0 bytes is free. Of the allocated memory 12.79 GiB is allocated by PyTorch, and 180.11 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
     }
   },
-  "timestamp": "2026-06-13 03:26:30"
+  "test_metrics": {
+    "logistic_regression": {
+      "pan_f1": 0.5002256461587988,
+      "f1_macro": 0.5002256461587988,
+      "f1_binary": 0.16652820846048183,
+      "precision": 0.5019968664785749,
+      "recall": 0.5025086871691908,
+      "accuracy": 0.7230341577812338,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.4906947795848303,
+      "avg_precision": 0.14300559926177508,
+      "tn": 254407,
+      "fp": 59255,
+      "fn": 42076,
+      "tp": 10123
+    },
+    "naive_bayes": {
+      "pan_f1": 0.125253956917576,
+      "f1_macro": 0.125253956917576,
+      "f1_binary": 0.24978765250139373,
+      "precision": 0.571359241882389,
+      "recall": 0.50018013020385,
+      "accuracy": 0.142983264135833,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.50018013020385,
+      "avg_precision": 0.14271848376477794,
+      "tn": 113,
+      "fp": 313549,
+      "fn": 0,
+      "tp": 52199
+    },
+    "linear_svc": {
+      "pan_f1": 0.48511836316132795,
+      "f1_macro": 0.48511836316132795,
+      "f1_binary": 0.20337673469634138,
+      "precision": 0.50420049052097,
+      "recall": 0.5073471379970449,
+      "accuracy": 0.6392865049841333,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.49973639510443824,
+      "avg_precision": 0.14464447355562554,
+      "tn": 217044,
+      "fp": 96618,
+      "fn": 35353,
+      "tp": 16846
+    },
+    "mlp": {
+      "pan_f1": 0.462201407323617,
+      "f1_macro": 0.462201407323617,
+      "f1_binary": 0.001262264042687475,
+      "precision": 0.6161907453529922,
+      "recall": 0.5002284240165161,
+      "accuracy": 0.8572654642063516,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.4998916856083957,
+      "avg_precision": 0.1428136077727077,
+      "tn": 313607,
+      "fp": 55,
+      "fn": 52166,
+      "tp": 33
+    },
+    "random_forest": {
+      "pan_f1": 0.6999650192618901,
+      "f1_macro": 0.6999650192618901,
+      "f1_binary": 0.491810887280322,
+      "precision": 0.6899338020716991,
+      "recall": 0.7124325128603088,
+      "accuracy": 0.8443753228685211,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7615684392460692,
+      "avg_precision": 0.5538753832740221,
+      "tn": 281373,
+      "fp": 32289,
+      "fn": 24648,
+      "tp": 27551
+    },
+    "extra_trees": {
+      "pan_f1": 0.6914322879588002,
+      "f1_macro": 0.6914322879588002,
+      "f1_binary": 0.47049652079343235,
+      "precision": 0.6921989972044827,
+      "recall": 0.690676824633164,
+      "accuracy": 0.8496232175607676,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7493325070865895,
+      "avg_precision": 0.5348597355937221,
+      "tn": 286401,
+      "fp": 27261,
+      "fn": 27756,
+      "tp": 24443
+    },
+    "xgboost": {
+      "pan_f1": 0.7262381653945614,
+      "f1_macro": 0.7262381653945614,
+      "f1_binary": 0.5077620626649523,
+      "precision": 0.8839096177425028,
+      "recall": 0.6750103270307244,
+      "accuracy": 0.9005933947592119,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7817150155785,
+      "avg_precision": 0.5913894954386103,
+      "tn": 310734,
+      "fp": 2928,
+      "fn": 33441,
+      "tp": 18758
+    },
+    "lightgbm": {
+      "pan_f1": 0.7096716422542173,
+      "f1_macro": 0.7096716422542173,
+      "f1_binary": 0.5086420630759524,
+      "precision": 0.6985904664164034,
+      "recall": 0.7235807797141989,
+      "accuracy": 0.8488688326987571,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.7828277597299914,
+      "avg_precision": 0.5918210217595661,
+      "tn": 281949,
+      "fp": 31713,
+      "fn": 23580,
+      "tp": 28619
+    },
+    "torch_mlp": {
+      "pan_f1": 0.5000839328554216,
+      "f1_macro": 0.5000839328554216,
+      "f1_binary": 0.15965112194453251,
+      "precision": 0.5010531775172726,
+      "recall": 0.5012506030765492,
+      "accuracy": 0.7319118463022842,
+      "n_samples": 365861,
+      "n_pos": 52199,
+      "n_neg": 313662,
+      "roc_auc": 0.5010895159921496,
+      "avg_precision": 0.1429856752185548,
+      "tn": 258461,
+      "fp": 55201,
+      "fn": 42882,
+      "tp": 9317
+    },
+    "torch_lstm": {
+      "pan_f1": 0.0,
+      "error": "CUDA out of memory. Tried to allocate 43.41 GiB. GPU 0 has a total capacity of 7.96 GiB of which 0 bytes is free. Of the allocated memory 12.79 GiB is allocated by PyTorch, and 180.11 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)"
+    }
+  },
+  "cv_results": {
+    "logistic_regression": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "naive_bayes": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "linear_svc": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "mlp": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "random_forest": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "extra_trees": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "xgboost": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "lightgbm": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "torch_mlp": {
+      "error": "No module named '_posixsubprocess'"
+    },
+    "torch_lstm": {
+      "error": "No module named '_posixsubprocess'"
+    }
+  },
+  "timestamp": "2026-06-15 11:48:00"
 }
