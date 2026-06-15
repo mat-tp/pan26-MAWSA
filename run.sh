@@ -1,2 +1,3 @@
 #!/usr/bin/env bash
-python /app/src/tira_predict.py "$@"
+set -euo pipefail
+python3 /app/src/tira_predict.py -i "$inputDataset" -o "$outputDir"

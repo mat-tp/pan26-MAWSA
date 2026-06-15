@@ -15,17 +15,21 @@ build/
 eggs/
 *.egg
 pip-wheel-metadata/
- 
+
 # ============================================================================
 # Cache & Temporary Files
 # ============================================================================
 .cache/
 *.npz
 *.npy
-*.pkl
-*.joblib
 *.tmp
 *.temp
+
+# ============================================================================
+# Pickle / Joblib — block ALL by default, then whitelist model artifacts below
+# ============================================================================
+*.pkl
+*.joblib
 
 # ============================================================================
 # IDE & Editor
@@ -52,7 +56,6 @@ pip-wheel-metadata/
 # Docker (ONLY ignore these specific ones)
 # ============================================================================
 # Note: Do NOT ignore Dockerfile or docker-compose.yml!
-# These are needed for the build process.
 Dockerfile.*.bak
 docker-compose.*.bak
 
@@ -103,13 +106,14 @@ mlruns/
 wandb/
 
 # ============================================================================
-# Model Outputs (large files)
+# Dataset — exclude everything except the trained model artifacts
 # ============================================================================
-dataset/*
+dataset/
 !dataset/outputs/
 !dataset/outputs/models/
 !dataset/outputs/models/best_model.pkl
 !dataset/outputs/models/feature_pipeline.pkl
+!dataset/outputs/models/variance_selector.pkl
 
 # ============================================================================
 # Logs
@@ -129,9 +133,3 @@ site/
 # ============================================================================
 Pipfile.lock
 poetry.lock
-
-__pycache__/
-*.pyc
-env/
-.venv/
-.git/

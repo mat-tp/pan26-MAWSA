@@ -1,0 +1,8 @@
+numpy==2.3.5
+scikit-learn==1.7.2
+xgboost==1.7.6
+nltk==3.8.1
+joblib==1.5.1
+tqdm==4.67.0
+cloudpickle==2.2.1
+psutil==5.9.5
