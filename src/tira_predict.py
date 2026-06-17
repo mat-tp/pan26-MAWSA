@@ -31,9 +31,7 @@ def load_sentences_from_text(text: str) -> list:
 def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipeline_path: str = None):
     """Predict using fitted pipeline."""
     
-    
     # Resolve model / pipeline paths
-
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     default_model_dir = os.path.join(
@@ -68,7 +66,6 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
             f"[TIRA] Error: Pipeline not found: {pipeline_path}"
         )
 
-    
     print(f"[TIRA] Loading model from: {model_path}")
     model = load_model(model_path)
     
@@ -86,7 +83,6 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
 
     if hasattr(model, "n_features_in_"):
         expected = int(model.n_features_in_)
-        sample_shape = None
         sample_text = ["This is a sample sentence.", "Another quick test sentence."]
         sample_feats = pipeline.extract_batch(sample_text)
         sample_feats = selector.transform(sample_feats)
@@ -99,10 +95,40 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
 
     os.makedirs(output_dir, exist_ok=True)
     
+    # DEBUG: Show what's in the input directory
+    print(f"[TIRA] Input directory contents ({input_dir}):")
+    if os.path.exists(input_dir):
+        all_files = []
+        for root, dirs, files in os.walk(input_dir):
+            level = root.replace(input_dir, '').count(os.sep)
+            indent = ' ' * 2 * level
+            print(f'{indent}{os.path.basename(root)}/')
+            subindent = ' ' * 2 * (level + 1)
+            for file in sorted(files):
+                print(f'{subindent}{file}')
+                all_files.append(os.path.join(root, file))
+        print(f"[TIRA] Total files found: {len(all_files)}")
+    else:
+        print(f"[TIRA] Directory does not exist!")
+        all_files = []
+    
     # Find all problem files
     txt_files = sorted(glob.glob(os.path.join(input_dir, "problem-*.txt")))
     
     if not txt_files:
+        print(f"[TIRA] No problem-*.txt found. Trying other patterns...")
+        # Try other patterns
+        for pattern in ["*.txt", "problem*.txt", "*problem*.txt", "*.jsonl", "*.json"]:
+            matches = sorted(glob.glob(os.path.join(input_dir, pattern)))
+            if matches:
+                print(f"[TIRA] Found {len(matches)} files matching '{pattern}': {[os.path.basename(m) for m in matches[:10]]}")
+        
+        # Also search one level deeper
+        for pattern in ["*/*.txt", "*/*.jsonl", "*/*.json"]:
+            matches = sorted(glob.glob(os.path.join(input_dir, pattern)))
+            if matches:
+                print(f"[TIRA] Found {len(matches)} files matching '{pattern}' in subdirectories: {[os.path.basename(m) for m in matches[:10]]}")
+        
         print(f"[TIRA] Warning: No problem-*.txt files found in {input_dir}")
         return
     
