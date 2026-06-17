@@ -13,7 +13,8 @@ import warnings
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the src directory to path so pickle can find 'models' module
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
 from src.utils.io import load_model, load_pipeline
 
@@ -190,6 +191,6 @@ def main():
         os.makedirs(input_dir, exist_ok=True)
     
     run_predict(input_dir, output_dir, args.model, args.pipeline)
-        
+
 if __name__ == "__main__":
     main()
