@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-
-# TIRA sets these environment variables automatically
-# Use them to pass input/output directories to the Python script
+echo "run.sh executed with args: $@"
+echo "inputDataset=$inputDataset"
+echo "outputDir=$outputDir"
 exec python3 /app/src/tira_predict.py "$@"

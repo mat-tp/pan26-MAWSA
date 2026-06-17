@@ -146,43 +146,50 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
 
 
 def main():
-    # Try to parse args but with very permissive defaults
     parser = argparse.ArgumentParser(description="PAN 2026 TIRA Submission")
     parser.add_argument("-i", "--input", 
-                       nargs='?',  # Makes argument optional
+                       nargs='?',
                        default=None,
                        help="Input directory")
     parser.add_argument("-o", "--output", 
-                       nargs='?',  # Makes argument optional
+                       nargs='?',
                        default=None,
                        help="Output directory")
     parser.add_argument("--model", default=None, help="Model path")
     parser.add_argument("--pipeline", default=None, help="Pipeline path")
     
-    # Parse known args to ignore any unexpected arguments from TIRA
+    # Use parse_known_args to handle any unexpected arguments
     args, unknown = parser.parse_known_args()
     
-    # Determine input directory with fallback chain
-    input_dir = (args.input or 
-                 os.environ.get("TIRA_INPUT_DIRECTORY") or 
-                 os.environ.get("inputDataset") or 
-                 "/tmp/input")
+    # Determine input directory with multiple fallbacks
+    input_dir = args.input
+    if not input_dir:
+        input_dir = os.environ.get("inputDataset")
+    if not input_dir:
+        input_dir = os.environ.get("TIRA_INPUT_DIRECTORY")
+    if not input_dir:
+        input_dir = "/tmp/input"
     
-    output_dir = (args.output or 
-                  os.environ.get("TIRA_OUTPUT_DIRECTORY") or 
-                  os.environ.get("outputDir") or 
-                  "/tmp/output")
+    # Determine output directory with multiple fallbacks
+    output_dir = args.output
+    if not output_dir:
+        output_dir = os.environ.get("outputDir")
+    if not output_dir:
+        output_dir = os.environ.get("TIRA_OUTPUT_DIRECTORY")
+    if not output_dir:
+        output_dir = "/tmp/output"
     
     print(f"[TIRA] Input directory: {input_dir}")
     print(f"[TIRA] Output directory: {output_dir}")
+    print(f"[TIRA] Environment inputDataset: {os.environ.get('inputDataset', 'NOT SET')}")
+    print(f"[TIRA] Environment outputDir: {os.environ.get('outputDir', 'NOT SET')}")
     
     if not os.path.exists(input_dir):
         print(f"[TIRA] Warning: Input directory not found: {input_dir}")
-        print(f"[TIRA] Contents of /tmp: {os.listdir('/tmp') if os.path.exists('/tmp') else 'N/A'}")
-        # Don't exit - TIRA might create the directory later
+        print(f"[TIRA] Creating input directory...")
         os.makedirs(input_dir, exist_ok=True)
     
     run_predict(input_dir, output_dir, args.model, args.pipeline)
-    
+        
 if __name__ == "__main__":
     main()
