@@ -17,12 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements-tira.txt .
 RUN pip3 install --no-cache-dir -r requirements-tira.txt
 
-# Pre-download NLTK data
-RUN python3 -c "import nltk; \
-    nltk.download('punkt'); \
-    nltk.download('stopwords'); \
-    nltk.download('averaged_perceptron_tagger_eng'); \
-    nltk.download('universal_tagset')"
+# Install Python dependencies
+COPY requirements-tira.txt .
+RUN pip3 install --no-cache-dir -r requirements-tira.txt
+
+# Copy pre-downloaded NLTK data (TIRA has no internet access)
+COPY nltk_data /root/nltk_data
 
 # Create output and model dirs
 RUN mkdir -p /output /app/dataset/outputs/models /app/src
