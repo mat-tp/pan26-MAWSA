@@ -146,23 +146,43 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
 
 
 def main():
+    # Try to parse args but with very permissive defaults
     parser = argparse.ArgumentParser(description="PAN 2026 TIRA Submission")
     parser.add_argument("-i", "--input", 
-                       default="/tmp/input",
+                       nargs='?',  # Makes argument optional
+                       default=None,
                        help="Input directory")
     parser.add_argument("-o", "--output", 
-                       default="/tmp/output",
+                       nargs='?',  # Makes argument optional
+                       default=None,
                        help="Output directory")
     parser.add_argument("--model", default=None, help="Model path")
     parser.add_argument("--pipeline", default=None, help="Pipeline path")
-    args = parser.parse_args()
     
-    # Check if TIRA environment variables are set
-    input_dir = os.environ.get("TIRA_INPUT_DIRECTORY", 
-                               os.environ.get("inputDataset", 
-                               args.input))
-    output_dir = os.environ.get("TIRA_OUTPUT_DIRECTORY", 
-                                os.environ.get("outputDir", 
-                                args.output))
+    # Parse known args to ignore any unexpected arguments from TIRA
+    args, unknown = parser.parse_known_args()
+    
+    # Determine input directory with fallback chain
+    input_dir = (args.input or 
+                 os.environ.get("TIRA_INPUT_DIRECTORY") or 
+                 os.environ.get("inputDataset") or 
+                 "/tmp/input")
+    
+    output_dir = (args.output or 
+                  os.environ.get("TIRA_OUTPUT_DIRECTORY") or 
+                  os.environ.get("outputDir") or 
+                  "/tmp/output")
+    
+    print(f"[TIRA] Input directory: {input_dir}")
+    print(f"[TIRA] Output directory: {output_dir}")
+    
+    if not os.path.exists(input_dir):
+        print(f"[TIRA] Warning: Input directory not found: {input_dir}")
+        print(f"[TIRA] Contents of /tmp: {os.listdir('/tmp') if os.path.exists('/tmp') else 'N/A'}")
+        # Don't exit - TIRA might create the directory later
+        os.makedirs(input_dir, exist_ok=True)
+    
+    run_predict(input_dir, output_dir, args.model, args.pipeline)
+    
 if __name__ == "__main__":
     main()
