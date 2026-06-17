@@ -111,10 +111,9 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
             continue
         problem_id = match.group(1)
         
-        # Get the difficulty level from the path
+        # Get the relative path to preserve directory structure
         rel_path = os.path.relpath(txt_file, input_dir)
-        parts = rel_path.split(os.sep)
-        difficulty = parts[0] if len(parts) > 1 else "unknown"
+        rel_dir = os.path.dirname(rel_path)
         
         with open(txt_file, "r", encoding="utf-8") as f:
             sentences = load_sentences_from_text(f.read())
@@ -140,12 +139,19 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
                     pred = model.predict(X_pred)[0]
                 changes.append(int(pred))
 
-        output_path = os.path.join(output_dir, f"solution-problem-{problem_id}.json")
+        # Preserve subdirectory structure in output
+        if rel_dir:
+            out_subdir = os.path.join(output_dir, rel_dir)
+            os.makedirs(out_subdir, exist_ok=True)
+            output_path = os.path.join(out_subdir, f"solution-problem-{problem_id}.json")
+        else:
+            output_path = os.path.join(output_dir, f"solution-problem-{problem_id}.json")
+        
         with open(output_path, "w") as f:
             json.dump({"changes": changes}, f)
         
-        print(f"[TIRA] Problem {problem_id} ({difficulty}): {len(sentences)} sentences → {len(changes)} predictions")
-        
+        print(f"[TIRA] Problem {problem_id} ({rel_path}): {len(sentences)} sentences → {len(changes)} predictions → {output_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="PAN 2026 TIRA Submission")
