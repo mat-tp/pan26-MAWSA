@@ -147,21 +147,22 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
 
 def main():
     parser = argparse.ArgumentParser(description="PAN 2026 TIRA Submission")
-    parser.add_argument("-i", "--input", default="/tmp/input", help="Input directory")
-    parser.add_argument("-o", "--output", default="/tmp/output", help="Output directory")
+    parser.add_argument("-i", "--input", 
+                       default="/tmp/input",
+                       help="Input directory")
+    parser.add_argument("-o", "--output", 
+                       default="/tmp/output",
+                       help="Output directory")
     parser.add_argument("--model", default=None, help="Model path")
     parser.add_argument("--pipeline", default=None, help="Pipeline path")
     args = parser.parse_args()
     
     # Check if TIRA environment variables are set
-    input_dir = os.environ.get("TIRA_INPUT_DIRECTORY", os.environ.get("inputDataset", args.input))
-    output_dir = os.environ.get("TIRA_OUTPUT_DIRECTORY", os.environ.get("outputDir", args.output))
-    
-    if not os.path.exists(input_dir):
-        print(f"[TIRA] Error: Input directory not found: {input_dir}")
-        sys.exit(1)
-    
-    run_predict(input_dir, output_dir, args.model, args.pipeline)
-
+    input_dir = os.environ.get("TIRA_INPUT_DIRECTORY", 
+                               os.environ.get("inputDataset", 
+                               args.input))
+    output_dir = os.environ.get("TIRA_OUTPUT_DIRECTORY", 
+                                os.environ.get("outputDir", 
+                                args.output))
 if __name__ == "__main__":
     main()
