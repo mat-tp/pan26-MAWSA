@@ -37,5 +37,5 @@ COPY src/ /app/src/
 COPY run.sh /app/run.sh
 RUN sed -i 's/\r//' /app/run.sh && chmod +x /app/run.sh
 
-ENTRYPOINT ["/app/run.sh"]
-CMD ["--help"]
+# THE KEY FIX: Pass TIRA's environment variables directly
+ENTRYPOINT [ "python3", "/app/src/tira_predict.py", "-i", "$inputDataset", "-o", "$outputDir" ]
