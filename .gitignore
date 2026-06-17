@@ -22,9 +22,7 @@ dataset/outputs/cache
 !dataset/outputs/models/
 
 # Ignoring the feature pipeline model
-dataset/outputs/models/feature_pipeline.pkl
-dataset/outputs/models
-*.pkl
+# dataset/outputs/models/feature_pipeline.pkl
 
 *.zip
 
