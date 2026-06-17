@@ -16,7 +16,7 @@ import numpy as np
 # Add the src directory to path so pickle can find 'models' module
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src'))
 
-from src.utils.io import load_model, load_pipeline
+from utils.io import load_model, load_pipeline
 
 
 def get_selector_path(model_path: str) -> str:
