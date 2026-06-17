@@ -95,40 +95,10 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
 
     os.makedirs(output_dir, exist_ok=True)
     
-    # DEBUG: Show what's in the input directory
-    print(f"[TIRA] Input directory contents ({input_dir}):")
-    if os.path.exists(input_dir):
-        all_files = []
-        for root, dirs, files in os.walk(input_dir):
-            level = root.replace(input_dir, '').count(os.sep)
-            indent = ' ' * 2 * level
-            print(f'{indent}{os.path.basename(root)}/')
-            subindent = ' ' * 2 * (level + 1)
-            for file in sorted(files):
-                print(f'{subindent}{file}')
-                all_files.append(os.path.join(root, file))
-        print(f"[TIRA] Total files found: {len(all_files)}")
-    else:
-        print(f"[TIRA] Directory does not exist!")
-        all_files = []
-    
-    # Find all problem files
-    txt_files = sorted(glob.glob(os.path.join(input_dir, "problem-*.txt")))
+    # Find all problem files recursively
+    txt_files = sorted(glob.glob(os.path.join(input_dir, "**", "problem-*.txt"), recursive=True))
     
     if not txt_files:
-        print(f"[TIRA] No problem-*.txt found. Trying other patterns...")
-        # Try other patterns
-        for pattern in ["*.txt", "problem*.txt", "*problem*.txt", "*.jsonl", "*.json"]:
-            matches = sorted(glob.glob(os.path.join(input_dir, pattern)))
-            if matches:
-                print(f"[TIRA] Found {len(matches)} files matching '{pattern}': {[os.path.basename(m) for m in matches[:10]]}")
-        
-        # Also search one level deeper
-        for pattern in ["*/*.txt", "*/*.jsonl", "*/*.json"]:
-            matches = sorted(glob.glob(os.path.join(input_dir, pattern)))
-            if matches:
-                print(f"[TIRA] Found {len(matches)} files matching '{pattern}' in subdirectories: {[os.path.basename(m) for m in matches[:10]]}")
-        
         print(f"[TIRA] Warning: No problem-*.txt files found in {input_dir}")
         return
     
@@ -140,6 +110,11 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
         if not match:
             continue
         problem_id = match.group(1)
+        
+        # Get the difficulty level from the path
+        rel_path = os.path.relpath(txt_file, input_dir)
+        parts = rel_path.split(os.sep)
+        difficulty = parts[0] if len(parts) > 1 else "unknown"
         
         with open(txt_file, "r", encoding="utf-8") as f:
             sentences = load_sentences_from_text(f.read())
@@ -169,8 +144,8 @@ def run_predict(input_dir: str, output_dir: str, model_path: str = None, pipelin
         with open(output_path, "w") as f:
             json.dump({"changes": changes}, f)
         
-        print(f"[TIRA] Problem {problem_id}: {len(sentences)} sentences → {len(changes)} predictions")
-
+        print(f"[TIRA] Problem {problem_id} ({difficulty}): {len(sentences)} sentences → {len(changes)} predictions")
+        
 
 def main():
     parser = argparse.ArgumentParser(description="PAN 2026 TIRA Submission")
